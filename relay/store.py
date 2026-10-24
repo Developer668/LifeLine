@@ -75,21 +75,46 @@ def add_event(incident, kind, body, event_id=None):
         return bool(row.rowcount)
 
 
-def enqueue(incident, kind, payload):
+def _enqueue_job(c, incident, kind, payload):
     now = time.time()
     serialized = json.dumps(payload, sort_keys=True)
-    with connect() as c:
-        c.execute("BEGIN IMMEDIATE")
-        existing = c.execute("""SELECT id FROM jobs WHERE incident=? AND kind=? AND payload=?
-            AND state IN ('queued','leased')""", (incident, kind, serialized)).fetchone()
-        if existing:
-            c.execute("COMMIT")
-            return existing["id"]
-        job_id = str(uuid.uuid4())
-        c.execute("""INSERT INTO jobs (id,incident,kind,payload,state,created,updated)
-            VALUES (?,?,?,?,?,?,?)""", (job_id, incident, kind, serialized, "queued", now, now))
-        c.execute("COMMIT")
+    existing = c.execute("""SELECT id FROM jobs WHERE incident=? AND kind=? AND payload=?
+        AND state IN ('queued','leased')""", (incident, kind, serialized)).fetchone()
+    if existing:
+        return existing['id']
+    job_id = str(uuid.uuid4())
+    c.execute("""INSERT INTO jobs (id,incident,kind,payload,state,created,updated)
+        VALUES (?,?,?,?,?,?,?)""", (job_id, incident, kind, serialized, 'queued', now, now))
     return job_id
+
+
+def enqueue(incident, kind, payload):
+    with connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        job_id=_enqueue_job(c,incident,kind,payload)
+        c.execute('COMMIT')
+    return job_id
+
+
+def accept_sms_job(incident, event_id, eventbody, payload):
+    """Atomically deduplicate one provider event and persist its inference job.
+
+    Returns (new_event, job_id). A duplicate from another incident returns no job
+    identifier, preventing accidental cross-incident disclosure. Include event_id
+    in the payload so two distinct SMS messages with the same text remain turns.
+    """
+    with connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        prior=c.execute('SELECT incident,body FROM events WHERE id=?',(event_id,)).fetchone()
+        if prior:
+            c.execute('COMMIT')
+            body=json.loads(prior['body'])
+            return False,body.get('job_id') if prior['incident']==incident else None
+        job_id=_enqueue_job(c,incident,'message',{**payload,'event_id':event_id})
+        c.execute('INSERT INTO events VALUES(?,?,?,?,?)',
+                  (event_id,incident,'inbound_sms',json.dumps({**eventbody,'job_id':job_id}),time.time()))
+        c.execute('COMMIT')
+    return True,job_id
 
 
 def claim():
