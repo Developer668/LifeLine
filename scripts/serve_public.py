@@ -22,6 +22,8 @@ def main():
         raise SystemExit('Install cloudflared from its official package, then run again.')
     tunnel=subprocess.Popen([binary,'tunnel','--no-autoupdate','--url',f'http://127.0.0.1:{args.port}'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
     gateway=None
+    reload_requested=threading.Event()
+    signal.signal(signal.SIGHUP,lambda *_:reload_requested.set())
     try:
         for line in tunnel.stdout:
             match=re.search(r'https://[a-z0-9-]+\.trycloudflare\.com',line)
@@ -39,7 +41,17 @@ def main():
         def consume():
             for _ in tunnel.stdout:pass
         threading.Thread(target=consume,daemon=True).start()
-        while gateway.poll() is None and tunnel.poll() is None:
+        while tunnel.poll() is None:
+            if reload_requested.is_set() or gateway.poll() is not None:
+                reload_requested.clear()
+                if gateway.poll() is None:
+                    gateway.terminate()
+                    try:gateway.wait(timeout=40)
+                    except subprocess.TimeoutExpired:gateway.kill();gateway.wait()
+                load_dotenv(root/'.env',override=True)
+                os.environ['PUBLIC_BASE_URL']=url
+                gateway=subprocess.Popen([sys.executable,'-m','relay','serve','--port',str(args.port)],cwd=root,env=os.environ.copy())
+                print('Gateway restarted; public HTTPS address preserved.',flush=True)
             threading.Event().wait(.5)
         raise SystemExit(gateway.returncode or tunnel.returncode or 1)
     except KeyboardInterrupt:

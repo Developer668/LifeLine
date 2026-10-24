@@ -30,6 +30,9 @@ def dispatch_outbox(ident=None):
         store.update_outbox(ident,'failed')
         store.add_event(row['incident'],'outbox_blocked',{'id':ident,'reason':'opted_out'})
         return {'state':'failed','id':ident,'reason':'opted_out'}
+    from . import bandwidth_sms
+    if bandwidth_sms.owns(row['incident']):
+        return bandwidth_sms.dispatch(row)
     if os.getenv('TWILIO_LIVE_SEND','false').lower() != 'true':
         store.update_outbox(ident,'simulated')
         return {'state':'simulated','id':ident}

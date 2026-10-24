@@ -12,6 +12,18 @@ dependencies = [
     "python-dotenv>=1.2.4",
 ]
 
+[project.optional-dependencies]
+speech = [
+    "piper-tts==1.8.0",
+]
+voice = [
+    "audioop-lts>=0.2.1 ; python_full_version >= '3.13'",
+    "piper-tts==1.8.0",
+    "vosk==0.3.42 ; sys_platform == 'darwin'",
+    "vosk==0.3.45 ; sys_platform != 'darwin'",
+    "websockets>=15",
+]
+
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.25"]
 

@@ -4,7 +4,7 @@ LifeLine was bootstrapped from the existing sibling RELAY starter. Its nine base
 
 ## Confirmed
 
-- `uv run pytest -q`: **90 passed**, zero failures; one upstream FastAPI/Starlette TestClient deprecation warning.
+- `uv run pytest -q`: **102 passed**, zero failures; one upstream FastAPI/Starlette TestClient deprecation warning.
 - `uv run python -m compileall -q relay scripts` and `git diff --check`: passed.
 - Real MoLab hardware: NVIDIA RTX PRO6000 Blackwell Server Edition,97887MiB, driver595.71.05. No Mac GPU inference was used.
 - Real MiniCPM-o4.5 health, model listing, text completion, validated structured proposals, and image completion passed. Simulation disabled.
@@ -38,9 +38,19 @@ Three backup HTTP rounds also passed with explicitly simulated responses in0.429
 - The pinned Omni vocoder adapter omitted the reference StepAudio package's module-alias initialization. A preserved, reproducible source patch invokes that helper before YAML construction. All three model stages subsequently initialized.
 - Initial structured output used an invalid enum; it was rejected, then explicit schema/example prompting repaired the demonstrated path. Invalid proposals continue to fail closed.
 - Live checks exposed plural hazard and sentence-punctuation coordinate parsing defects. Both were fixed with regression tests. Missing/unavailable official data has deterministic wording and cannot become an empty-alert claim.
-- Optional MiniCPM-generated audio hit the bounded read timeout; it is **not verified** and not used for phone output. Twilio Say remains the implemented speech path. Piper is a researched free replacement, not yet installed.
+- Optional MiniCPM-generated audio hit the bounded read timeout; it is **not verified** and not used for phone output. Twilio Say remains the existing carrier speech path. Local Piper is installed and verified for file-free telephone audio generation. The temporary browser conversation/preview endpoints were removed to match the phone/SMS-only product requirement.
 - Twilio credentials authenticate as an active Trial account. Number provisioning returned21404; a shared trial number and recipient were supplied afterward. One approved bounded call request returnedHTTP400 for disallowed trial parameters **before creating a call**. No real carrier call, inbound SMS, or delivered outbound text is claimed. No number was purchased and no paid upgrade was performed. See TWILIO_TRIAL.md and FREE_ALTERNATIVES.md.
 - Contact consent/acknowledgement/fallback is tested with simulated sends; actual contact delivery is unverified. Acknowledgement is never completed assistance.
 - Physical iPhone Safari/Android Chrome capture, real cross-channel carrier linking, and three consecutive complete carrier demos remain unverified.
 
 Local JSON evidence is under reports/: gpu-text.json, gpu-demo-final.json, gpu-weather.json, gpu-camera.json and gpu-reference.json. Never present this prototype as a monitored emergency hotline or mark the full release checklist complete while the carrier/device gates remain outstanding.
+
+## Bandwidth phone and SMS integration
+
+OAuth credentials authenticated successfully. Existing trial voice and messaging applications were configured with authenticated HTTPS callbacks and read back successfully. The assigned number is active and its voice configuration points to that application. No number was purchased, no outbound carrier call was placed, and no SMS was sent during configuration.
+
+A public HTTPS/WebSocket test used synthetic carrier messages with actual local Piper speech, actual Vosk transcription and the actual GPU worker. The first round trip completed in 5.99 seconds. A subsequent two-question conversation completed in 11.92 seconds, produced 139 outgoing audio packets and four playback-clear events, and created no audio files. A local ASR/TTS check transcribed the generated emergency-kit question exactly; detected speech at 0.16 seconds in that fixture. These are synthetic-audio measurements, not measured human interruption latency. Evidence is local in reports/bandwidth-stream.json.
+
+Tests cover callback authentication, account/application scoping, one-use stream capabilities, hard call duration, stale audio cancellation, inbound-only recognition, direct ASCII message formatting, duplicate inbound messages, opt-out, durable send claims, no uncertain retry, and terminal delivery receipts. MiniCPM sometimes imitated plain-text conversation history instead of returning JSON; a final per-turn format reminder was added and schema validation remains mandatory. Physical phone calls, acoustics, end-to-end SMS delivery and real trusted-contact delivery remain unverified. The discarded browser voice interface is not part of the product.
+
+A signed synthetic Bandwidth SMS event traveled through the public callback, actual GPU worker and direct-text formatter. The response fit one 129-character trial text; its outbox was explicitly simulated before live replies were enabled. No carrier SMS was sent. Evidence: reports/bandwidth-sms.json. Live SMS replies are now enabled for genuine incoming texts, with the 24/day local cap and provider trial recipient restriction; actual handset receipt remains unverified.

@@ -151,6 +151,7 @@ def test_structured_model_proposal_is_validated_before_output():
     def handler(request):
         data=json.loads(request.content)
         assert data['response_format']['json_schema']['name']=='relay_action'
+        assert 'Response format: Return ONLY a valid JSON object' in data['messages'][-1]['content'][-1]['text']
         return httpx.Response(200,json={'choices':[{'message':{'content':json.dumps(plan)}}]})
     with client_for(handler) as client:
         assert ModelAdapter(base='http://model',client=client).propose({'text':'hello'}).spoken_response==plan['spoken_response']

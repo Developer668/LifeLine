@@ -1,8 +1,8 @@
 # RELAY
 
-Phone-first emergency information and consenting trusted-contact coordination. FastAPI + durable SQLite gateway, Twilio voice/SMS, outbound MoLab worker, MiniCPM-o 4.5, NWS and USGS context, optional browser camera frames.
+Phone-first emergency information and consenting trusted-contact coordination. FastAPI + durable SQLite gateway, Bandwidth live voice/SMS (legacy Twilio adapter retained), outbound MoLab worker, MiniCPM-o 4.5, NWS and USGS context, optional browser camera frames.
 
-**An unmonitored information prototype. RELAY does not dispatch emergency services, diagnose, confirm safety, or guarantee assistance.** The immediate-risk referral works without model availability. Live carrier operation requires your own Twilio configuration. See [verification status](docs/VERIFICATION.md) for measured evidence and remaining gates.
+**An unmonitored information prototype. RELAY does not dispatch emergency services, diagnose, confirm safety, or guarantee assistance.** The immediate-risk referral works without model availability. The user flow is ordinary phone calls and direct SMS; no website or browser conversation is required. Live carrier operation requires Bandwidth configuration. See [verification status](docs/VERIFICATION.md) for measured evidence and remaining gates.
 
 ## Start locally
 
@@ -23,7 +23,17 @@ uv run python scripts/demo.py --runs 3
 
 The default worker **refuses** to substitute simulated inference when a model is missing. To use MoLab, follow [GPU setup and verification](scripts/gpu_README.md). Keep the model listening on MoLab localhost; only the worker connects outbound to this gateway. Never run a simulated worker alongside a real worker during live verification.
 
-## Phone setup
+## Bandwidth phone setup
+
+Install local streaming speech dependencies with `uv sync --extra voice --group dev`. Set the Bandwidth credentials, account ID, assigned number, public HTTPS callback address, and local Vosk/Piper model paths in `.env`. Run `uv run --extra voice python scripts/configure_bandwidth.py --apply` to configure the existing trial voice and messaging applications. It does not buy a number, call anyone, or send a text. Original callback snapshots are saved privately under `.runtime/`.
+
+Incoming calls use a two-way Bandwidth WebSocket: Vosk transcribes inbound audio locally; the real MoLab worker answers; Piper sends raw telephone audio packets directly into the call. Speech detection cancels reply playback and clears the carrier buffer when the caller interrupts. No WAV file is created or downloaded. The model still reasons on completed utterances; this is an interruptible phone pipeline rather than native MiniCPM duplex audio.
+
+Calls default to a hard 45-second demo cap, enforced in both BXML and the gateway. SMS sends require `BANDWIDTH_LIVE_SEND=true`. Direct answers use at most four numbered ASCII texts of 129 characters each, with a source label for official lookups. The app limits sends to one every 10.2 seconds and 24 per day; uncertain submissions are never retried automatically. `STOP` opts out and `START` opts in. A caller can request a text summary explicitly. Incoming text messages authorize a reply to that sender.
+
+Bandwidth Build restricts calls/messages to the verified trial mobile and prepends its trial message prefix. The self-hosted speech components have no per-minute external speech API meter. See [verification status](docs/VERIFICATION.md) for actual evidence; synthetic audio transport tests are not carrier verification.
+
+## Legacy Twilio setup
 
 Set these values in `.env`, then restart:
 

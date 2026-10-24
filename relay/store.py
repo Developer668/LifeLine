@@ -301,8 +301,15 @@ def _prepare_job_outbox(c, row, payload, state, content):
     if optout and optout['opted_out']:
         return None
     ident='job-'+row['id']
+    reference = (payload.get('reference_text') or content) if state=='complete' else FAILURE_TEXT
+    if payload.get('provider') == 'bandwidth':
+        # Direct SMS uses the spoken summary, not a long report or web link.
+        reference = content if state == 'complete' else FAILURE_TEXT
+        official = payload.get('official_context')
+        if official:
+            reference += ' Source: ' + str(official.get('source', 'official source')).upper() + '.'
     c.execute('INSERT OR IGNORE INTO outbox VALUES(?,?,?,?,?,?,?)',
-              (ident,row['incident'],recipient['phone'],((payload.get('reference_text') or content) if state=='complete' else FAILURE_TEXT)[:1000],
+              (ident,row['incident'],recipient['phone'],reference[:1000],
                'prepared',time.time(),None))
     return ident
 

@@ -6,11 +6,11 @@ The current [official Build guide](https://dev.bandwidth.com/docs/voice/programm
 
 [Build SMS documentation](https://dev.bandwidth.com/docs/messaging/build-free-trial/) permits custom message text, with constraints: 30 days, verified recipient only, ASCII, 129 characters of app text plus the trial prefix, 6 sends/minute, 200/day, no MMS. A short secure reference link could carry RELAY's full sourced answer while respecting the SMS length limit. Live messaging to multiple trusted contacts remains outside this free trial.
 
-[Sign up](https://www.bandwidth.com/build-sign-up/). Account creation, phone verification and API credentials are required before integration can be live-tested. No account was created, no terms accepted, and no charge or alternative-provider call was made during this research. Existing Twilio credentials do not work with Bandwidth.
+[Sign up](https://www.bandwidth.com/build-sign-up/). The user supplied credentials after signup. OAuth authentication and callback configuration/readback now pass; the existing trial number is assigned. No paid upgrade, number purchase or alternative-provider call was made. Existing Twilio credentials do not work with Bandwidth.
 
 ## Failed model audio: local Piper TTS
 
-[Piper](https://github.com/OHF-Voice/piper1-gpl) is an open-source local speech engine. It can replace the optional MiniCPM speech-generation stage while keeping MiniCPM as the reasoning/vision model. There is no external speech API meter; it runs on the existing host. Voice-model licenses and deployment resources still apply. This is a researched replacement, not an installed or benchmarked component in this build. Bandwidth's own speech output is another option within its trial credits.
+[Piper](https://github.com/OHF-Voice/piper1-gpl) is an open-source local speech engine. It can replace the optional MiniCPM speech-generation stage while keeping MiniCPM as the reasoning/vision model. There is no external speech API meter; it runs on the existing host. Voice-model licenses and deployment resources still apply. Piper is installed as an optional component (`uv sync --extra speech`). A local cold synthesis check took 1.078 seconds for 6.35 seconds of audio; cached playback preparation took under 1 ms. Those file endpoints were removed. Piper now synthesizes sentence audio directly into Bandwidth PCMU packets, paired with local Vosk streaming recognition and playback clearing for interruptions. Bandwidth's own speech output is another option within its trial credits.
 
 ## Ongoing browser calls/chat: self-hosted LiveKit
 

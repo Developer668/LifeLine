@@ -91,6 +91,8 @@ def health():
     return {"status": "ok", "mode": os.getenv("RELAY_MODE", "demo"),
             "readiness": {"twilio_configured": all(os.getenv(k) for k in ('TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_NUMBER')),
                           "live_send_enabled": os.getenv('TWILIO_LIVE_SEND','false').lower()=='true',
+                          "bandwidth_configured": all(os.getenv(k) for k in ('BANDWIDTH_CLIENT_ID', 'BANDWIDTH_CLIENT_SECRET', 'BANDWIDTH_ACCOUNT_ID', 'BANDWIDTH_VOICE_APPLICATION_ID', 'BANDWIDTH_CALLBACK_SECRET')),
+                          "bandwidth_sms_enabled": os.getenv('BANDWIDTH_LIVE_SEND','false').lower()=='true',
                           "gpu_verified": False, "carrier_verified": False},
             "notice": "Gateway health does not establish GPU readiness."}
 
@@ -321,3 +323,8 @@ install_media(app)
 install_coordination(app)
 from .middleware import RequestBoundary
 app.add_middleware(RequestBoundary)
+
+from .bandwidth import install_bandwidth
+install_bandwidth(app)
+from .bandwidth_sms import install_bandwidth_sms
+install_bandwidth_sms(app)

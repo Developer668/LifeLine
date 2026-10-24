@@ -9,6 +9,7 @@ import threading
 import time
 import httpx
 from .model import ModelAdapter
+from .presentation import spoken, reference as render_reference
 
 API = os.getenv('RELAY_API_URL', 'http://127.0.0.1:8000').rstrip('/')
 TOKEN = os.getenv('RELAY_WORKER_TOKEN', '')
@@ -76,12 +77,8 @@ def run_answer(job):
             answer = 'I could not verify official ' + official['source'].upper() + ' information right now. This does not establish that conditions are safe.'
         elif official['state'] == 'stale':
             answer = 'The official source is stale. ' + answer[:1700]
-        urls = list(dict.fromkeys(a['source_url'] for a in official['alerts']))[:2]
-        updated = official.get('source_updated_at') or (official['alerts'][0]['source_time'] if official['alerts'] else None)
-        reference = (answer[:650] + '\nOfficial ' + official['source'].upper() + ': ' + official['state']
-            + '\nSource updated: ' + (updated or 'not supplied')
-            + '\nRetrieved: ' + official['fetched_at'] + ('\n' + '\n'.join(urls) if urls else ''))[:1000]
-    return answer, reference, official
+        reference = render_reference(answer, official)
+    return spoken(answer), reference, official
 
 
 def run_one(job):
