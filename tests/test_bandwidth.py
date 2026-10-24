@@ -37,6 +37,16 @@ def test_callback_auth_replay_and_cost_bound(monkeypatch):
     assert ET.fromstring(client.post('/bandwidth/voice', json=event, headers=auth).text).find('StartStream') is None
 
 
+def test_outbound_answer_binds_callee_even_without_direction_field(monkeypatch):
+    client, auth, event = setup(monkeypatch)
+    reply = client.post('/bandwidth/voice', headers=auth, json={**event, 'eventType': 'answer',
+        'from': '+15550000131', 'to': '+15550000442'})
+    assert reply.status_code == 200
+    import hashlib
+    incident = 'bw-' + hashlib.sha256(event['callId'].encode()).hexdigest()[:28]
+    assert store.phone_for(incident) == '+15550000442'
+
+
 def test_websocket_auth_metadata_and_single_use(monkeypatch):
     client, auth, event = setup(monkeypatch)
     reply = ET.fromstring(client.post('/bandwidth/voice', json=event, headers=auth).text)

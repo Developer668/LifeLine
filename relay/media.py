@@ -20,6 +20,21 @@ def initialize():
         c.execute('''CREATE TABLE IF NOT EXISTS camera_sessions (
           token_hash TEXT PRIMARY KEY, incident TEXT NOT NULL, expires REAL NOT NULL,
           revoked INTEGER NOT NULL DEFAULT 0, last_frame REAL NOT NULL DEFAULT 0)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS camera_short_links (
+          digest TEXT PRIMARY KEY, incident TEXT NOT NULL, target TEXT NOT NULL,
+          expires REAL NOT NULL)''')
+
+
+def issue_short_camera_link(incident):
+    target = issue_camera_link(incident)
+    from urllib.parse import urlsplit, parse_qs
+    expires = int(parse_qs(urlsplit(target).query)['expires'][0])
+    token = secrets.token_urlsafe(16)
+    with store.connect() as c:
+        c.execute('DELETE FROM camera_short_links WHERE expires<?', (time.time(),))
+        c.execute('INSERT INTO camera_short_links VALUES(?,?,?,?)',
+                  (hashlib.sha256(token.encode()).hexdigest(), incident, target, expires))
+    return os.getenv('PUBLIC_BASE_URL', 'http://127.0.0.1:8000').rstrip('/') + '/c/' + token
 
 
 def issue_camera_link(incident):
@@ -54,6 +69,20 @@ def install_media(app):
     # Replace the baseline prototype handlers; preserve its public paths.
     app.router.routes[:] = [r for r in app.router.routes if not getattr(r, 'path', '').startswith('/camera/')
                            and getattr(r, 'path', '') != '/demo/incidents/{incident}/camera-link']
+
+    @app.get('/c/{token}')
+    def short_camera(token: str):
+        from fastapi.responses import RedirectResponse
+        from urllib.parse import urlsplit, parse_qs
+        initialize()
+        with store.connect() as c:
+            row = c.execute('SELECT * FROM camera_short_links WHERE digest=? AND expires>?',
+                            (hashlib.sha256(token.encode()).hexdigest(), time.time())).fetchone()
+        if not row:
+            raise HTTPException(403, 'Optional camera link expired or stopped')
+        params = parse_qs(urlsplit(row['target']).query)
+        authorize(row['incident'], int(params['expires'][0]), params['token'][0])
+        return RedirectResponse(row['target'], status_code=307)
 
     @app.post('/demo/incidents/{incident}/camera-link')
     def link(request: Request, incident: str):

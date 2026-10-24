@@ -32,7 +32,10 @@ def dispatch_outbox(ident=None):
         return {'state':'failed','id':ident,'reason':'opted_out'}
     from . import bandwidth_sms
     if bandwidth_sms.owns(row['incident']):
-        return bandwidth_sms.dispatch(row)
+        result = bandwidth_sms.dispatch(row)
+        from .coordination import sync_outbox
+        sync_outbox(ident)
+        return result
     if os.getenv('TWILIO_LIVE_SEND','false').lower() != 'true':
         store.update_outbox(ident,'simulated')
         return {'state':'simulated','id':ident}

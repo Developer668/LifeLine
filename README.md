@@ -29,6 +29,12 @@ Install local streaming speech dependencies with `uv sync --extra voice --group 
 
 Incoming calls use a two-way Bandwidth WebSocket: Vosk transcribes inbound audio locally; the real MoLab worker answers; Piper sends raw telephone audio packets directly into the call. Speech detection cancels reply playback and clears the carrier buffer when the caller interrupts. No WAV file is created or downloaded. The model still reasons on completed utterances; this is an interruptible phone pipeline rather than native MiniCPM duplex audio.
 
+To share a call with SMS, say **link my texts** and send `LINK CODE` from the calling phone. The code expires after five minutes and is single-use; the authorized association lasts one hour. `UNLINK` separates the channels. Caller ID alone never joins histories.
+
+Trusted-contact setup and decisions work over SMS: `ADD CONTACT Name +1number`, privately share the returned `JOIN CODE` instruction with that participant, then `REQUEST Name: message`. Optional `REQUEST Name FALLBACK Other: message` pre-approves one fallback if the first participant declines. Nothing is sent until the owner returns `APPROVE CODE`. Participants reply `ACK CODE`, `DECLINE CODE`, or `ASSISTED CODE`; acknowledgement is receipt only. `REVOKE ALL` withdraws that phone's contact consent. `STATUS` reports actual delivery and participant state. This does not remove the carrier trial's verified-recipient restriction.
+
+`CAMERA` is optional and explicitly requested. It texts a short ten-minute camera capability, then returns to the same incident; calls, information answers, references, contacts and approvals require no website. Camera access is never requested automatically.
+
 Calls default to a hard 45-second demo cap, enforced in both BXML and the gateway. SMS sends require `BANDWIDTH_LIVE_SEND=true`. Direct answers use at most four numbered ASCII texts of 129 characters each, with a source label for official lookups. The app limits sends to one every 10.2 seconds and 24 per day; uncertain submissions are never retried automatically. `STOP` opts out and `START` opts in. A caller can request a text summary explicitly. Incoming text messages authorize a reply to that sender.
 
 Bandwidth Build restricts calls/messages to the verified trial mobile and prepends its trial message prefix. The self-hosted speech components have no per-minute external speech API meter. See [verification status](docs/VERIFICATION.md) for actual evidence; synthetic audio transport tests are not carrier verification.

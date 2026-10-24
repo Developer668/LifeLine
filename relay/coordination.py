@@ -31,7 +31,17 @@ def initialize():
         CREATE TABLE IF NOT EXISTS contact_deliveries (
           request_id TEXT PRIMARY KEY, recipient_incident TEXT NOT NULL, body TEXT NOT NULL,
           state TEXT NOT NULL DEFAULT 'prepared');
+        CREATE TABLE IF NOT EXISTS contact_outboxes (
+          request_id TEXT NOT NULL, outbox_id TEXT PRIMARY KEY);
         ''')
+        columns = c.execute('PRAGMA table_info(contact_outboxes)').fetchall()
+        if any(col['name'] == 'request_id' and col['pk'] for col in columns):
+            c.executescript('''ALTER TABLE contact_outboxes RENAME TO contact_outboxes_previous;
+                CREATE TABLE contact_outboxes(request_id TEXT NOT NULL,outbox_id TEXT PRIMARY KEY);
+                INSERT INTO contact_outboxes SELECT request_id,outbox_id FROM contact_outboxes_previous;
+                DROP TABLE contact_outboxes_previous;''')
+    from .phone_commands import initialize as init_phone
+    init_phone()
 
 
 def digest(token):
@@ -93,6 +103,13 @@ def _prepare(c, incident, contact_id, fallback_id, message, key, parent_id=None)
     recipient_incident = 'contact-'+contact_id
     c.execute('INSERT OR IGNORE INTO incidents VALUES(?,?,?,?,?)',(recipient_incident,contact['phone'],'trusted_contact',time.time(),time.time()))
     body = ('RELAY trusted-contact request: '+message[:400]+f'\nRespond: {public()}/contacts/requests/{ident}?token={token}\nAcknowledgement means receipt only. No emergency dispatch.')
+    has_bandwidth = c.execute("SELECT name FROM sqlite_master WHERE name='bandwidth_incidents'").fetchone()
+    if has_bandwidth and c.execute('SELECT 1 FROM bandwidth_incidents WHERE incident=?', (incident,)).fetchone():
+        from .phone_commands import issue
+        code = issue(contact['phone'], 'reply', {'request_id': ident, 'token': token}, seconds=3600, connection=c)
+        c.execute('INSERT OR IGNORE INTO bandwidth_incidents VALUES(?)', (recipient_incident,))
+        body = ('RELAY contact request: ' + message[:240] + f' Reply ACK {code} to confirm receipt, '
+                f'DECLINE {code} if unavailable, or ASSISTED {code} after helping. No emergency dispatch.')
     c.execute('INSERT INTO contact_deliveries VALUES(?,?,?,?)',(ident,recipient_incident,body,'prepared'))
     return {'id':ident,'state':'pending','delivery_state':'prepared','response_token':token,'expires_at':expires}
 
@@ -115,6 +132,19 @@ def _dispatch(ident):
             c.execute("UPDATE contact_requests SET delivery_state='not_authorized' WHERE id=?",(ident,))
             c.execute('COMMIT')
             return 'not_authorized'
+        has_bandwidth = c.execute("SELECT name FROM sqlite_master WHERE name='bandwidth_incidents'").fetchone()
+        if has_bandwidth and c.execute('SELECT 1 FROM bandwidth_incidents WHERE incident=?', (row['recipient_incident'],)).fetchone():
+            # Prepare the carrier intent and association atomically. The outbox
+            # drains later; webhook handling must not wait on carrier pacing.
+            outbox_id = 'job-contact-' + ident
+            recipient = c.execute('SELECT phone FROM incidents WHERE id=?', (row['recipient_incident'],)).fetchone()['phone']
+            c.execute('INSERT OR IGNORE INTO outbox VALUES(?,?,?,?,?,?,?)',
+                      (outbox_id, row['recipient_incident'], recipient, row['body'], 'prepared', time.time(), None))
+            c.execute('INSERT OR IGNORE INTO contact_outboxes VALUES(?,?)', (ident, outbox_id))
+            c.execute("UPDATE contact_deliveries SET state='queued' WHERE request_id=?", (ident,))
+            c.execute("UPDATE contact_requests SET delivery_state='prepared' WHERE id=?", (ident,))
+            c.execute('COMMIT')
+            return 'prepared'
         c.execute("UPDATE contact_deliveries SET state='sending' WHERE request_id=?",(ident,))
         c.execute("UPDATE contact_requests SET delivery_state='sending' WHERE id=?",(ident,))
         c.execute('COMMIT')
@@ -129,6 +159,21 @@ def _dispatch(ident):
         c.execute('COMMIT')
     store.add_event(row['incident'],'trusted_contact_requested',{'request_id':ident,'delivery_state':delivery_state})
     return delivery_state
+
+
+def sync_outbox(outbox_id):
+    """Carrier acceptance and handset delivery are distinct from participant help."""
+    with store.connect() as c:
+        row = c.execute('SELECT request_id FROM contact_outboxes WHERE outbox_id=?', (outbox_id,)).fetchone()
+        if row:
+            states = [r['state'] for r in c.execute('SELECT o.state FROM contact_outboxes m JOIN outbox o ON o.id=m.outbox_id WHERE m.request_id=?', (row['request_id'],))]
+            state = ('failed' if 'failed' in states else 'acceptance_unknown' if 'acceptance_unknown' in states
+                     else 'delivered' if all(s == 'delivered' for s in states)
+                     else 'simulated' if all(s == 'simulated' for s in states)
+                     else 'accepted_by_provider' if all(s in ('accepted_by_provider', 'delivered') for s in states)
+                     else 'prepared')
+            c.execute('UPDATE contact_requests SET delivery_state=? WHERE id=?', (state, row['request_id']))
+            c.execute('UPDATE contact_deliveries SET state=? WHERE request_id=?', (state, row['request_id']))
 
 
 def _create(incident, contact_id, fallback_id, message, key, parent_id=None):

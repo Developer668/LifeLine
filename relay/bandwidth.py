@@ -94,10 +94,17 @@ class Conversation:
         self.generation = 0
         self.task = None
         self.send_lock = asyncio.Lock()
+        self.audio_packets = 0
+        self.clear_events = 0
+        self.turns = 0
 
     async def send(self, message):
         async with self.send_lock:
             await self.socket.send_json(message)
+            if message.get('eventType') == 'playAudio':
+                self.audio_packets += 1
+            elif message.get('eventType') == 'clear':
+                self.clear_events += 1
 
     async def interrupt(self):
         self.generation += 1
@@ -126,6 +133,26 @@ class Conversation:
         try:
             from .app import emergency_response
             result = emergency_response(text)
+            if not result and re.search(r'\b(?:text|send)\b.*\bcamera\b', text, re.I):
+                phone = store.phone_for(self.incident)
+                if phone and not store.opted_out(phone):
+                    from .media import issue_short_camera_link
+                    url = issue_short_camera_link(self.incident)
+                    store.queue_outbox(self.incident, phone, 'Optional camera (10 min): ' + url,
+                                       idempotency_key='camera-' + hashlib.sha256(url.encode()).hexdigest())
+                    result = 'I prepared an optional camera link for text delivery. Open it only when safe and choose when to share a frame. You can continue talking without it.'
+                else:
+                    result = 'I cannot text a camera link because your caller number is unavailable or texts are stopped. You can continue asking questions by phone.'
+            if not result and re.search(r'\blink\b.*\b(?:text|texts|sms|context)\b', text, re.I):
+                try:
+                    code = store.create_link(self.incident)
+                    result = ('To share this call with text messages, text LINK followed by this code to the same number: '
+                              + ', '.join(code) + '. Use the phone you are calling from, within five minutes.')
+                except ValueError:
+                    result = 'Your caller number is unavailable. You can still text RELAY separately, but I cannot securely link this call.'
+            if not result and re.search(r'\b(?:contact|notify|message)\b.*\b(?:friend|family|mom|dad|trusted|contact)\b', text, re.I):
+                result = ('Trusted contacts must consent first. Text CONTACTS to check enrollment, or ADD CONTACT followed by a name and phone number. '
+                          'Then text REQUEST, the contact name, a colon, and your message. RELAY will ask you to approve before sending.')
             sms_consent = bool(re.search(r'\b(?:text|sms) (?:me|that|this|it)|\bsend (?:me )?(?:a )?text', text, re.I))
             if not result and sms_consent and re.search(r'\b(?:that|this|it|summary)\b', text, re.I):
                 last = store.latest(self.incident)
@@ -159,6 +186,7 @@ class Conversation:
             store.add_event(self.incident, 'voice_processing_error', {'available': False})
 
     async def turn(self, text):
+        self.turns += 1
         await self.interrupt()
         self.task = asyncio.create_task(self.answer(text, self.generation))
 
@@ -186,7 +214,7 @@ def install_bandwidth(app):
             raise HTTPException(403, 'Wrong voice application')
         if body.get('eventType') not in ('initiate', 'answer'):
             return Response('<Response/>', media_type='application/xml')
-        phone = body.get('to') if body.get('direction') == 'outbound' else body.get('from')
+        phone = body.get('to') if body.get('eventType') == 'answer' or body.get('direction') == 'outbound' else body.get('from')
         if not isinstance(phone, str) or not re.fullmatch(r'\+1\d{10}', phone):
             phone = None
         return Response(bxml(call_id, phone), media_type='application/xml')
@@ -202,7 +230,10 @@ def install_bandwidth(app):
         initialize()
         if body.get('eventType') == 'disconnect':
             with store.connect() as c:
+                row = c.execute('SELECT incident FROM bandwidth_sessions WHERE call_id=?', (body.get('callId'),)).fetchone()
                 c.execute('UPDATE bandwidth_sessions SET stopped=1 WHERE call_id=?', (body.get('callId'),))
+            if row:
+                store.add_event(row['incident'], 'carrier_disconnect', {'cause': str(body.get('cause', 'unknown'))[:80], 'error_code': body.get('errorCode')})
         return Response(status_code=204)
 
     @app.websocket('/bandwidth/stream/{call_id}')
@@ -259,6 +290,9 @@ def install_bandwidth(app):
             store.add_event(session['incident'], 'voice_stream_error', {'available': False})
         finally:
             await conversation.close()
+            store.add_event(session['incident'], 'phone_stream_summary', {
+                'audio_packets': conversation.audio_packets, 'interruptions': conversation.clear_events,
+                'recognized_turns': conversation.turns})
             with store.connect() as c:
                 c.execute('UPDATE bandwidth_sessions SET stopped=1 WHERE call_id=?', (call_id,))
             try:

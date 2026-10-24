@@ -52,3 +52,15 @@ def test_camera_validates_decode_limits_and_observation_isolation(media):
     with store.connect() as c:
         row=c.execute('SELECT payload FROM jobs WHERE id=?',(job_id,)).fetchone()
     assert 'image_base64' not in row['payload']
+
+
+def test_optional_camera_short_link_fits_trial_and_rechecks_stop(media,monkeypatch):
+    from relay.media import issue_short_camera_link
+    monkeypatch.setenv('PUBLIC_BASE_URL','https://wins-flying-indicator-obligations.trycloudflare.com')
+    link=issue_short_camera_link('visual-one')
+    assert len('Optional camera (10 min): '+link)<=129
+    response=media.get(urlsplit(link).path,follow_redirects=False)
+    assert response.status_code==307
+    target=urlsplit(response.headers['location'])
+    assert media.post(target.path+'/stop?'+target.query).status_code==200
+    assert media.get(urlsplit(link).path,follow_redirects=False).status_code==403

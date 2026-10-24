@@ -4,7 +4,7 @@ LifeLine was bootstrapped from the existing sibling RELAY starter. Its nine base
 
 ## Confirmed
 
-- `uv run pytest -q`: **102 passed**, zero failures; one upstream FastAPI/Starlette TestClient deprecation warning.
+- `uv run pytest -q`: **110 passed**, zero failures; one upstream FastAPI/Starlette TestClient deprecation warning.
 - `uv run python -m compileall -q relay scripts` and `git diff --check`: passed.
 - Real MoLab hardware: NVIDIA RTX PRO6000 Blackwell Server Edition,97887MiB, driver595.71.05. No Mac GPU inference was used.
 - Real MiniCPM-o4.5 health, model listing, text completion, validated structured proposals, and image completion passed. Simulation disabled.
@@ -54,3 +54,15 @@ A public HTTPS/WebSocket test used synthetic carrier messages with actual local 
 Tests cover callback authentication, account/application scoping, one-use stream capabilities, hard call duration, stale audio cancellation, inbound-only recognition, direct ASCII message formatting, duplicate inbound messages, opt-out, durable send claims, no uncertain retry, and terminal delivery receipts. MiniCPM sometimes imitated plain-text conversation history instead of returning JSON; a final per-turn format reminder was added and schema validation remains mandatory. Physical phone calls, acoustics, end-to-end SMS delivery and real trusted-contact delivery remain unverified. The discarded browser voice interface is not part of the product.
 
 A signed synthetic Bandwidth SMS event traveled through the public callback, actual GPU worker and direct-text formatter. The response fit one 129-character trial text; its outbox was explicitly simulated before live replies were enabled. No carrier SMS was sent. Evidence: reports/bandwidth-sms.json. Live SMS replies are now enabled for genuine incoming texts, with the 24/day local cap and provider trial recipient restriction; actual handset receipt remains unverified.
+
+## Original-plan phone workflow completion pass
+
+The Bandwidth adapter now supports one-time, phone-bound voice/SMS association using the existing secure link mechanism. Normal follow-up questions inherit only the explicitly linked incident. Tests verify mismatched-phone rejection and unlink behavior. Individually spoken five-digit ZIP codes are normalized before official lookups.
+
+Trusted-contact enrollment, participant consent, owner approval, acknowledgement, decline, one approved fallback, reported assistance, revocation and status work through SMS commands. Model-generated text cannot authorize these actions. Bandwidth contact requests contain SMS reply codes, not web response links. Multipart delivery is reported as delivered only after every part is delivered. Duplicate command callbacks do not duplicate enrollment. Optional CAMERA sends a short capability only when requested; its redirect rechecks expiry and stop/revocation.
+
+One previously authorized bounded carrier call was attempted via Bandwidth. HTTP 402 explicitly rejected creation because the previously approved target is not the mobile verified on this Bandwidth trial. No actual call was created; the call script records submission intent before attempting and will not automatically retry. A verified-mobile handset interaction remains necessary for carrier verification. The recipient's new number must be supplied/authorized before a different outbound target is used. Build restrictions also prevent live trusted-contact delivery to other numbers; the guarded state machine can be verified independently without claiming a live send.
+
+A rate-limit regression check initially caught a missing SQLite COMMIT on failed phone-code attempts; explicit transaction completion fixed it. All current workflow tests pass. Native MiniCPM duplex audio, physical iPhone/Android camera capture and three full successful carrier demo runs remain unverified.
+
+The latest deployed two-question raw-audio/GPU check passed in 11.94 seconds with 133 outgoing audio packets and four clear events. It is explicitly synthetic carrier transport, with real ASR/TTS/GPU and no audio files. An outbound answer event without a direction field now binds the callee, with a regression test.

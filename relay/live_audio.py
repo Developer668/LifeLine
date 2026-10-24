@@ -5,6 +5,7 @@ No recordings or WAV files are created. Optional dependencies load lazily.
 import json
 import os
 import threading
+import re
 from pathlib import Path
 
 _asr_model = None
@@ -13,6 +14,20 @@ _asr_lock = threading.Lock()
 _tts_voice = None
 _tts_path = None
 _tts_lock = threading.Lock()
+
+
+def normalize_transcript(text):
+    """Preserve five individually spoken ZIP digits for deterministic lookups."""
+    digits = {'zero': '0', 'oh': '0', 'one': '1', 'two': '2', 'three': '3',
+              'four': '4', 'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9'}
+    pattern = r'\b(?:' + '|'.join(digits) + r')(?:[ -]+(?:' + '|'.join(digits) + r')){4}\b'
+    def replace(match):
+        before = text[:match.start()]
+        after = text[match.end():]
+        if re.search(r'\b(?:' + '|'.join(digits) + r')[ -]+$', before, re.I) or re.match(r'[ -]+(?:' + '|'.join(digits) + r')\b', after, re.I):
+            return match.group()
+        return ''.join(digits[word.lower()] for word in re.split(r'[ -]+', match.group()))
+    return re.sub(pattern, replace, text, flags=re.I)
 
 
 def ready():
@@ -60,7 +75,7 @@ class Recognizer:
         final = self.recognizer.AcceptWaveform(wide)
         result = json.loads(self.recognizer.Result() if final else self.recognizer.PartialResult())
         text = result.get('text' if final else 'partial', '').strip()
-        return {'speech_start': speech_start, 'final': bool(final), 'text': text[:2000]}
+        return {'speech_start': speech_start, 'final': bool(final), 'text': normalize_transcript(text[:2000])}
 
 
 def sentence_audio(text):

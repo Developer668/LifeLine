@@ -82,8 +82,16 @@ def dispatch(row):
         return {'state': 'failed', 'id': ident, 'reason': 'configuration_missing'}
     parts = sms_parts(row['content'])
     # Every part gets its own durable claim and receipt. Never retry an uncertain send.
-    for index, part in enumerate(parts[1:], 2):
-        store.queue_outbox(row['incident'], row['recipient'], part, idempotency_key=ident + '-part-' + str(index))
+    with store.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        contact = c.execute('SELECT request_id FROM contact_outboxes WHERE outbox_id=?', (ident,)).fetchone()
+        for index, part in enumerate(parts[1:], 2):
+            child_id = 'job-' + ident + '-part-' + str(index)
+            c.execute('INSERT OR IGNORE INTO outbox VALUES(?,?,?,?,?,?,?)',
+                      (child_id, row['incident'], row['recipient'], part, 'prepared', time.time(), None))
+            if contact:
+                c.execute('INSERT OR IGNORE INTO contact_outboxes VALUES(?,?)', (contact['request_id'], child_id))
+        c.execute('COMMIT')
     slot = reserve(ident)
     if slot is None:
         store.update_outbox(ident, 'failed')
@@ -145,6 +153,32 @@ def install_bandwidth_sms(app):
                     continue
                 if not text or store.opted_out(phone):
                     continue
+                link = re.fullmatch(r'LINK\s+([A-Fa-f0-9]{10})', text, re.I)
+                if link:
+                    if store.add_event(incident, 'link_attempt', {'requested': True}, event_id='bw-' + mid):
+                        linked = store.redeem_link(incident, phone, link.group(1))
+                        reply = ('Call and text context linked for one hour.' if linked else
+                                 'Link code invalid, expired, used, or for another phone. Say "link my texts" during your call.')
+                        store.queue_outbox(incident, phone, reply, idempotency_key='bw-command-' + mid)
+                    continue
+                if command == 'UNLINK':
+                    with store.connect() as c:
+                        c.execute('DELETE FROM associations WHERE sms_incident=?', (incident,))
+                    store.queue_outbox(incident, phone, 'Call and text context separated.', idempotency_key='bw-command-' + mid)
+                    continue
+                incident = store.resolve_sms(incident)
+                from .phone_commands import handle
+                command_key = 'bw-command-' + mid
+                cached = store.voice_cached(command_key)
+                if cached:
+                    store.queue_outbox(incident, phone, cached, idempotency_key=command_key)
+                    continue
+                # Commands never ask the language model to authorize an action.
+                reply = handle(incident, phone, text)
+                if reply is not None:
+                    store.cache_voice(command_key, reply)
+                    store.queue_outbox(incident, phone, reply, idempotency_key=command_key)
+                    continue
                 from .app import emergency_response
                 immediate = emergency_response(text)
                 if immediate:
@@ -161,4 +195,6 @@ def install_bandwidth_sms(app):
                 # Callback can race the submit response; bind only to this provider's intent.
                 if row and owns(row['incident']):
                     store.delivery_update(mid, status, tag)
+                    from .coordination import sync_outbox
+                    sync_outbox(tag)
         return Response(status_code=204)
