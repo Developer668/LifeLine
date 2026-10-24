@@ -53,7 +53,11 @@ def test_decline_one_preapproved_fallback(setup):
     assert not co.respond(r['id'],r['response_token'],'declined')['fallback_triggered']
     with store.connect() as c:assert c.execute('SELECT count(*) FROM contact_requests').fetchone()[0]==2
     child=response['fallback']
-    assert not co.respond(child['id'],child['response_token'],'declined')['fallback_triggered']
+    assert 'response_token' not in child
+    with store.connect() as c:
+        event=c.execute("SELECT body FROM events WHERE kind='trusted_contact_response' LIMIT 1").fetchone()['body']
+    assert 'response_token' not in event
+    assert child['delivery_state']=='simulated'
 
 def test_revocation_and_expiry(setup):
     p=enrolled()
@@ -62,6 +66,7 @@ def test_revocation_and_expiry(setup):
     with pytest.raises(HTTPException):co.respond(r['id'],r['response_token'],'acknowledged')
     with store.connect() as c:c.execute('UPDATE trusted_contacts SET token_expires=0 WHERE id=?',(p['id'],))
     with pytest.raises(HTTPException):co.consent(p['id'],p['enrollment_token'],True)
+    assert co.consent(p['id'],p['enrollment_token'],False)['state']=='revoked'
 
 def test_routes_auth_and_participant_forgery(setup):
     app=FastAPI();co.install_coordination(app);client=TestClient(app)
@@ -71,3 +76,12 @@ def test_routes_auth_and_participant_forgery(setup):
     page=client.get('/contacts/requests/'+r['id']+'?token='+r['response_token'])
     assert page.status_code==200 and page.headers['referrer-policy']=='no-referrer'
     assert client.post('/contacts/requests/'+r['id']+'/respond',json={'token':r['response_token'],'decision':'acknowledged'}).json()['state']=='acknowledged'
+
+
+def test_http_consent_revocation_after_enrollment_expiry(setup):
+    app=FastAPI();co.install_coordination(app);client=TestClient(app)
+    p=enrolled()
+    with store.connect() as c:c.execute('UPDATE trusted_contacts SET token_expires=0 WHERE id=?',(p['id'],))
+    assert client.get('/contacts/'+p['id']+'/consent?token='+p['enrollment_token']).status_code==200
+    assert client.post('/contacts/'+p['id']+'/consent',json={'token':p['enrollment_token'],'accept':True}).status_code==403
+    assert client.post('/contacts/'+p['id']+'/consent',json={'token':p['enrollment_token'],'accept':False}).json()['state']=='revoked'

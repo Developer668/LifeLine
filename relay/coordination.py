@@ -63,7 +63,7 @@ def consent(ident, token, accept):
     with store.connect() as c:
         c.execute('BEGIN IMMEDIATE')
         contact = c.execute('SELECT * FROM trusted_contacts WHERE id=?',(ident,)).fetchone()
-        if not contact or not secrets.compare_digest(contact['token_hash'],digest(token)) or contact['token_expires'] < time.time():
+        if not contact or not secrets.compare_digest(contact['token_hash'],digest(token)) or (accept and contact['token_expires'] < time.time()):
             raise HTTPException(403,'Invalid or expired enrollment token')
         state = 'enrolled' if accept else 'revoked'
         c.execute('UPDATE trusted_contacts SET consent=? WHERE id=?',(state,ident))
@@ -138,6 +138,8 @@ def respond(ident,token,decision):
     if fallback:
         try:
             delivery = _create(row['incident'],row['fallback_id'],None,row['message'],'fallback-'+ident,parent_id=ident)
+            # Never expose another participant's bearer capability to the declining contact.
+            delivery = {k:v for k,v in delivery.items() if k not in ('response_token','expires_at')}
         except HTTPException:
             delivery = {'state':'blocked','delivery_state':'not_authorized'}
     store.add_event(row['incident'],'trusted_contact_response',{'request_id':ident,'decision':decision,'fallback':delivery})
@@ -177,9 +179,9 @@ def install_coordination(app):
         from fastapi.responses import HTMLResponse
         with store.connect() as c:
             contact = c.execute('SELECT token_hash,token_expires FROM trusted_contacts WHERE id=?',(ident,)).fetchone()
-        if not contact or contact['token_expires'] < time.time() or not secrets.compare_digest(contact['token_hash'],digest(token)):
+        if not contact or not secrets.compare_digest(contact['token_hash'],digest(token)):
             raise HTTPException(403,'Invalid or expired enrollment token')
-        return HTMLResponse('''<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RELAY contact consent</title><body><h1>Choose whether to be a trusted contact</h1><p>With your consent, RELAY can send you check-in requests approved by the person who invited you. You are not an emergency responder. Agreeing does not promise assistance. This invitation expires after 24 hours. Keep this private link to revoke consent within that time.</p><button data-accept="true">I consent to receive requests</button> <button data-accept="false">Decline or revoke consent</button><p id="status" role="status"></p><script>for(const b of document.querySelectorAll('button'))b.onclick=async()=>{try{let r=await fetch(location.pathname,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:new URLSearchParams(location.search).get('token'),accept:b.dataset.accept==='true'})});let d=await r.json();document.querySelector('#status').textContent=r.ok?d.state:(d.detail||'Unable to save consent');}catch(e){document.querySelector('#status').textContent='Network unavailable. Please try again.'}};</script></body></html>''',headers={'Referrer-Policy':'no-referrer','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
+        return HTMLResponse('''<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RELAY contact consent</title><body><h1>Choose whether to be a trusted contact</h1><p>With your consent, RELAY can send you check-in requests approved by the person who invited you. You are not an emergency responder. Agreeing does not promise assistance. Enrollment expires after 24 hours. Keep this private link to revoke consent at any time; expired invitations cannot enroll again.</p><button data-accept="true">I consent to receive requests</button> <button data-accept="false">Decline or revoke consent</button><p id="status" role="status"></p><script>for(const b of document.querySelectorAll('button'))b.onclick=async()=>{try{let r=await fetch(location.pathname,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:new URLSearchParams(location.search).get('token'),accept:b.dataset.accept==='true'})});let d=await r.json();document.querySelector('#status').textContent=r.ok?d.state:(d.detail||'Unable to save consent');}catch(e){document.querySelector('#status').textContent='Network unavailable. Please try again.'}};</script></body></html>''',headers={'Referrer-Policy':'no-referrer','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
 
     @app.post('/contacts/{ident}/consent')
     def consent_route(ident:str,body:Consent):
