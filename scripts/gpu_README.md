@@ -1,6 +1,6 @@
 # MoLab inference handoff
 
-Status: A live MoLab session was connected and its RTX PRO6000 Blackwell Server Edition (97887MiB) hardware verified. MiniCPM weights and the pinned stack are installed; runtime startup and inference verification are being completed. No local Mac GPU inference was used. See docs/VERIFICATION.md for final measured status.
+Status: A live MoLab session was connected and its RTX PRO6000 Blackwell Server Edition (97887MiB) hardware verified. MiniCPM weights and the pinned stack are installed; all three stages initialized; real text/structured/image inference and a1/2/4-concurrency text benchmark passed. Optional generated audio timed out and is not enabled for phone output. No local Mac GPU inference was used. See docs/VERIFICATION.md for final measured status.
 
 ## Reproducible session setup
 

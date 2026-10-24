@@ -127,10 +127,15 @@ def worker_claim(request: Request):
     return {"job": store.claim()}
 
 
+from .engine.data import DataResult
+
 class FinishJob(BaseModel):
     lease: str = Field(min_length=12)
     result: str | None = Field(default=None, max_length=1800)
     error: str | None = Field(default=None, max_length=1800)
+
+    reference_text: str | None = Field(default=None, min_length=1, max_length=1000)
+    official_context: DataResult | None = None
 
     @model_validator(mode='after')
     def exactly_one(self):
@@ -144,7 +149,9 @@ class FinishJob(BaseModel):
 @app.post("/worker/jobs/{job_id}/complete")
 def worker_complete(request: Request, job_id: str, body: FinishJob):
     require_token(request, "RELAY_WORKER_TOKEN")
-    status = store.finish(job_id, body.lease, body.result, body.error)
+    status = store.finish(job_id, body.lease, body.result, body.error,
+        reference_text=body.reference_text,
+        official_context=body.official_context.model_dump(mode='json') if body.official_context else None)
     if not status:
         raise HTTPException(409, "Job missing, expired or already completed")
     if status["state"] in ("complete","failed"):

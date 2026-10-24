@@ -70,7 +70,7 @@ class OfficialData:
         return response.json()
 
     def locate(self, text):
-        coords = re.search(r'(?<![\d.])(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)(?![\d.])', text)
+        coords = re.search(r'(?<![\d.])(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)(?!\d|\.\d)', text)
         if coords:
             return Location(latitude=float(coords[1]), longitude=float(coords[2]), description='User-supplied coordinates', approximate=False)
         match = re.search(r'\b(\d{5})\b', text)

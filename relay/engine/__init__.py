@@ -15,9 +15,9 @@ def plan(text):
     if fallback:
         return ActionPlan(spoken_response=fallback)
     lower = text.lower()
-    if re.search(r'\b(earthquake|quake|seismic|shaking)\b',lower):
+    if re.search(r'\b(earthquakes?|quakes?|seismic|shaking)\b',lower):
         return ActionPlan(spoken_response='I can check recent USGS earthquake reports near your location.', next_action='get_earthquakes', reference_message=ReferenceMessage(required=True,source='usgs'))
-    if re.search(r'\b(weather|flood|tornado|hurricane|storm|wildfire|warning|alerts?)\b',lower):
+    if re.search(r'\b(weather|floods?|tornado(?:es|s)?|hurricanes?|storms?|wildfires?|warnings?|alerts?)\b',lower):
         return ActionPlan(spoken_response='I can check official NWS alerts for your location.', next_action='get_weather_alerts', reference_message=ReferenceMessage(required=True,source='nws'))
     if re.search(r'\b(camera|visual|video)\b',lower):
         return ActionPlan(spoken_response='You can choose to share a single camera frame when it is safe.', next_action='request_camera',requires_user_confirmation=True)

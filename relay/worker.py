@@ -24,7 +24,7 @@ def fetch_official_context(text):
     return build_context(text)
 
 
-LOCATION = re.compile(r'(?<![\d.])(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)(?![\d.])|\b\d{5}\b')
+LOCATION = re.compile(r'(?<![\d.])(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)(?!\d|\.\d)|\b\d{5}\b')
 
 
 def context_query(payload):
@@ -56,23 +56,46 @@ def context_query(payload):
     return text
 
 
-def run_one(job):
+def run_answer(job):
     from .engine import policy_response
     if job['kind'] != 'message':
         raise ValueError('Unsupported request type')
     payload = job['payload']
     fallback = policy_response(str(payload.get('text', '')))
     if fallback:
-        return fallback
+        return fallback, None, None
     context = fetch_official_context(context_query(payload))
-    return infer({**payload, 'context': context})
+    answer = infer({**payload, 'context': context})
+    official, reference = None, None
+    if context:
+        from .engine.data import DataResult
+        official = DataResult.model_validate_json(context).model_dump(mode='json')
+        if official['state'] == 'location_required':
+            answer = 'Please share a ZIP code or latitude and longitude so I can check official ' + official['source'].upper() + ' information.'
+        elif official['state'] == 'unavailable':
+            answer = 'I could not verify official ' + official['source'].upper() + ' information right now. This does not establish that conditions are safe.'
+        elif official['state'] == 'stale':
+            answer = 'The official source is stale. ' + answer[:1700]
+        urls = list(dict.fromkeys(a['source_url'] for a in official['alerts']))[:2]
+        updated = official.get('source_updated_at') or (official['alerts'][0]['source_time'] if official['alerts'] else None)
+        reference = (answer[:650] + '\nOfficial ' + official['source'].upper() + ': ' + official['state']
+            + '\nSource updated: ' + (updated or 'not supplied')
+            + '\nRetrieved: ' + official['fetched_at'] + ('\n' + '\n'.join(urls) if urls else ''))[:1000]
+    return answer, reference, official
+
+
+def run_one(job):
+    # Compatibility for local/manual callers that need only the spoken wording.
+    return run_answer(job)[0]
 
 
 def process(client, job):
     started = time.monotonic()
     try:
-        result = run_one(job)
+        result, reference, official = run_answer(job)
         completion = {'lease': job['lease'], 'result': result}
+        if reference:
+            completion.update(reference_text=reference, official_context=official)
     except Exception:
         # No private messages, model responses, or exception strings in logs.
         completion = {'lease': job['lease'], 'error': 'Model processing unavailable. No answer could be verified.'}

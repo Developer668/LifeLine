@@ -147,7 +147,7 @@ def claim():
         return dict(row) | {"lease": lease, "payload": payload, "event": event}
 
 
-def finish(job_id, lease, result=None, error=None):
+def finish(job_id, lease, result=None, error=None, reference_text=None, official_context=None):
     if (result is None) == (error is None):
         return None
     now = time.time()
@@ -161,6 +161,8 @@ def finish(job_id, lease, result=None, error=None):
         content = (error or result or "")[:1800]
         payload=json.loads(row['payload'])
         payload.pop('image_base64',None)
+        if reference_text is not None: payload['reference_text'] = reference_text[:1000]
+        if official_context is not None: payload['official_context'] = official_context
         c.execute("UPDATE jobs SET state=?,result=?,payload=?,lease=NULL,leased_until=NULL,updated=? WHERE id=?",
                   (state, content, json.dumps(payload,sort_keys=True), now, job_id))
         outbox_id = _prepare_job_outbox(c,row,payload,state,content)
@@ -182,8 +184,8 @@ def incident_info(incident):
             return None
         return {
             "incident": dict(i),
-            "jobs": [dict(x) for x in c.execute(
-                "SELECT id,kind,state,result,created,updated FROM jobs WHERE incident=? ORDER BY created", (incident,))],
+            "jobs": [job_view(x) for x in c.execute(
+                "SELECT id,kind,state,result,created,updated,payload FROM jobs WHERE incident=? ORDER BY created", (incident,))],
             "outbox": [dict(x) for x in c.execute(
                 "SELECT id,state,content,created FROM outbox WHERE incident=? ORDER BY created", (incident,))]
         }
@@ -300,7 +302,7 @@ def _prepare_job_outbox(c, row, payload, state, content):
         return None
     ident='job-'+row['id']
     c.execute('INSERT OR IGNORE INTO outbox VALUES(?,?,?,?,?,?,?)',
-              (ident,row['incident'],recipient['phone'],(content if state=='complete' else FAILURE_TEXT)[:1000],
+              (ident,row['incident'],recipient['phone'],((payload.get('reference_text') or content) if state=='complete' else FAILURE_TEXT)[:1000],
                'prepared',time.time(),None))
     return ident
 
@@ -349,3 +351,11 @@ def recover_stalled_submissions(timeout=60):
     with connect() as c:
         return c.execute("UPDATE outbox SET state='acceptance_unknown' WHERE state='submitting' AND id IN (SELECT id FROM outbox_submissions WHERE started<?)",
                          (time.time()-timeout,)).rowcount
+
+
+def job_view(row):
+    data = dict(row)
+    payload = json.loads(data.pop('payload'))
+    if payload.get('official_context'):
+        data['official_context'] = payload['official_context']
+    return data

@@ -99,7 +99,7 @@ def test_probe_checks_selected_model():
 
 
 def test_worker_completion_failure_never_replaces_result_with_error(monkeypatch):
-    monkeypatch.setattr(worker, 'run_one', lambda job: 'verified response')
+    monkeypatch.setattr(worker, 'run_answer', lambda job: ('verified response', None, None))
     monkeypatch.setattr(worker.time, 'sleep', lambda _: None)
     requests = []
     def handler(request):

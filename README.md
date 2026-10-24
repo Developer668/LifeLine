@@ -109,7 +109,7 @@ uv run python scripts/load_test.py
 uv run python scripts/demo.py --runs 3
 ```
 
-Load results distinguish HTTP/SQLite queue processing from GPU throughput. GPU-only measurements use `scripts/benchmark_gpu.py` at concurrency1,2,4. Reports under `reports/` are local evidence, not production capacity promises. Follow [the demo and release checklist](docs/DEMO.md).
+Load results distinguish HTTP/SQLite queue processing from GPU throughput. GPU-only measurements use `scripts/benchmark_gpu.py` at concurrency1,2,4. Reports under `reports/` are local evidence, not production capacity promises. Follow [the demo and release checklist](docs/DEMO.md). For the current carrier/audio blockers, see [free alternatives](docs/FREE_ALTERNATIVES.md).
 
 ## Source layout
 

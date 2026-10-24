@@ -77,3 +77,20 @@ def test_claim_exposes_validated_common_incident_event():
     assert event.incident_id==event.session_id=='event_drill'
     assert event.event_id==job['id']
     assert event.payload=={'text':'fictional event'}
+
+
+def test_official_reference_and_timestamp_snapshot_survive_completion(monkeypatch):
+    monkeypatch.setenv('TWILIO_LIVE_SEND','false')
+    monkeypatch.setenv('RELAY_WORKER_TOKEN','reference-worker-token')
+    store.upsert_incident('source_drill','+15555550111','sms')
+    store.enqueue('source_drill','message',{'text':'weather','channel':'sms','sms_consent':True})
+    job=store.claim()
+    context={'source':'nws','state':'available','fetched_at':'2026-10-24T22:00:00Z','source_updated_at':'2026-10-24T21:58:00Z','alerts':[], 'notice':'An empty result does not establish safety.'}
+    response=TestClient(app).post('/worker/jobs/'+job['id']+'/complete',headers={'Authorization':'Bearer reference-worker-token'},json={
+        'lease':job['lease'],'result':'No matching alerts; this does not establish safety.',
+        'reference_text':'Official NWS snapshot updated 2026-10-24T21:58:00Z. https://weather.gov',
+        'official_context':context})
+    assert response.status_code==200
+    info=store.incident_info('source_drill')
+    assert 'https://weather.gov' in info['outbox'][0]['content']
+    assert info['jobs'][0]['official_context']['source_updated_at'].startswith('2026-10-24T21:58:00')

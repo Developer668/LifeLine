@@ -106,7 +106,12 @@ class ModelAdapter:
             from .contracts import ActionPlan
             messages[0]['content'] += (' Return only a JSON object matching the supplied schema. '
                 'spoken_response must answer using the verified context. next_action is a proposal only. '
-                'Reference messages always require consent. Camera/contact proposals require confirmation.')
+                'Reference messages always require consent. Camera/contact proposals require confirmation. '
+                'Use exact enum values; never use None or null for next_action. '
+                'Example format only: replace spoken_response with the actual answer; do not copy this wording. {"spoken_response":"RELAY provides information and cannot dispatch help.",'
+                '"reference_message":{"required":false,"source":"none","requires_consent":true},'
+                '"next_action":"respond","requires_user_confirmation":false}. '
+                'Schema: ' + json.dumps(ActionPlan.model_json_schema(), separators=(',', ':')))
             body['response_format'] = {'type': 'json_schema', 'json_schema': {
                 'name': 'relay_action', 'strict': True, 'schema': ActionPlan.model_json_schema()}}
             body['max_tokens'] = 360

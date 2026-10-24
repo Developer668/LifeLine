@@ -78,3 +78,18 @@ def test_usgs_empty_204_has_no_invented_source_timestamp():
 def test_future_nws_metadata_not_treated_as_fresh():
     result=adapter({'updated':(datetime.now(timezone.utc)+timedelta(days=1)).isoformat(),'features':[]}).weather(LOCATION)
     assert result.state=='stale'
+
+
+def test_plural_hazard_requests_keep_the_official_lookup_intent():
+    from relay.engine import plan
+    for text in ['recent earthquakes near 92037','any quakes nearby?']:
+        assert plan(text).next_action=='get_earthquakes'
+    for text in ['any warnings near 92037','floods nearby?','tornadoes in my area']:
+        assert plan(text).next_action=='get_weather_alerts'
+
+
+def test_coordinates_allow_sentence_punctuation_without_partial_numbers():
+    from relay.engine.data import OfficialData
+    p=OfficialData().locate('Check 32.8328,-117.2713. Do these reports establish safety?')
+    assert p.latitude==32.8328 and p.longitude==-117.2713
+    assert OfficialData().locate('32.8328,-117.2713.5') is None
