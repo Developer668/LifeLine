@@ -8,6 +8,9 @@ import sqlite3
 import time
 import uuid
 
+FAILURE_TEXT = ('RELAY could not verify an answer because the information service is unavailable. '
+                'For immediate danger, call your local emergency number directly.')
+
 DB = lambda: os.getenv("RELAY_DB", "relay.db")
 
 
@@ -47,6 +50,7 @@ def initialize():
         CREATE TABLE IF NOT EXISTS events(
             id TEXT PRIMARY KEY, incident TEXT NOT NULL, kind TEXT NOT NULL,
             body TEXT NOT NULL, created REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS outbox_submissions(id TEXT PRIMARY KEY, started REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS outbox(
             id TEXT PRIMARY KEY, incident TEXT NOT NULL, recipient TEXT,
             content TEXT NOT NULL, state TEXT NOT NULL,
@@ -92,7 +96,7 @@ def claim():
     now = time.time()
     with connect() as c:
         c.execute("BEGIN IMMEDIATE")
-        c.execute("UPDATE jobs SET state='failed',result='Worker lease expired after maximum attempts.',lease=NULL,leased_until=NULL,updated=? WHERE state='leased' AND leased_until < ? AND attempts >= 3", (now, now))
+        _recover_expired(c, now)
         row = c.execute("""SELECT * FROM jobs WHERE
             (state='queued' OR (state='leased' AND leased_until < ? AND attempts < 3))
             AND attempts < 3
@@ -127,8 +131,10 @@ def finish(job_id, lease, result=None, error=None):
         payload.pop('image_base64',None)
         c.execute("UPDATE jobs SET state=?,result=?,payload=?,lease=NULL,leased_until=NULL,updated=? WHERE id=?",
                   (state, content, json.dumps(payload,sort_keys=True), now, job_id))
+        outbox_id = _prepare_job_outbox(c,row,payload,state,content)
         c.execute("COMMIT")
-        return {"incident": row["incident"], "kind": row["kind"], "text": content, "state": state}
+        return {"incident": row["incident"], "kind": row["kind"], "text": content, "state": state,
+                "outbox_id": outbox_id}
 
 
 def latest(incident):
@@ -151,10 +157,10 @@ def incident_info(incident):
         }
 
 
-def queue_outbox(incident, recipient, content):
-    ident = str(uuid.uuid4())
+def queue_outbox(incident, recipient, content, idempotency_key=None):
+    ident = "job-"+idempotency_key if idempotency_key else str(uuid.uuid4())
     with connect() as c:
-        c.execute("INSERT INTO outbox VALUES(?,?,?,?,?,?,?)", (
+        c.execute("INSERT OR IGNORE INTO outbox VALUES(?,?,?,?,?,?,?)", (
             ident, incident, recipient, content[:1000], "prepared", time.time(), None))
     return ident
 
@@ -248,3 +254,66 @@ def opted_out(phone):
     with connect() as c:
         row=c.execute('SELECT opted_out FROM preferences WHERE phone=?',(phone,)).fetchone()
     return bool(row and row['opted_out'])
+
+
+def _prepare_job_outbox(c, row, payload, state, content):
+    """Persist intent in the SAME transaction as completion; never send here."""
+    if not payload.get('sms_consent') or payload.get('channel') not in ('sms','voice'):
+        return None
+    recipient = c.execute('SELECT phone FROM incidents WHERE id=?',(row['incident'],)).fetchone()
+    if not recipient or not recipient['phone']:
+        return None
+    optout = c.execute('SELECT opted_out FROM preferences WHERE phone=?',(recipient['phone'],)).fetchone()
+    if optout and optout['opted_out']:
+        return None
+    ident='job-'+row['id']
+    c.execute('INSERT OR IGNORE INTO outbox VALUES(?,?,?,?,?,?,?)',
+              (ident,row['incident'],recipient['phone'],(content if state=='complete' else FAILURE_TEXT)[:1000],
+               'prepared',time.time(),None))
+    return ident
+
+
+def _recover_expired(c, now):
+    rows=c.execute("SELECT * FROM jobs WHERE state='leased' AND leased_until<? AND attempts>=3",(now,)).fetchall()
+    for row in rows:
+        payload=json.loads(row['payload']);payload.pop('image_base64',None)
+        c.execute("UPDATE jobs SET state='failed',result=?,payload=?,lease=NULL,leased_until=NULL,updated=? WHERE id=?",
+                  ('Worker lease expired after maximum attempts.',json.dumps(payload,sort_keys=True),now,row['id']))
+        _prepare_job_outbox(c,row,payload,'failed',FAILURE_TEXT)
+    return len(rows)
+
+
+def recover_expired():
+    with connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        count=_recover_expired(c,time.time())
+        c.execute('COMMIT')
+    return count
+
+
+def outbox_for(ident):
+    with connect() as c:
+        row=c.execute('SELECT * FROM outbox WHERE id=?',(ident,)).fetchone()
+    return dict(row) if row else None
+
+
+def claim_outbox(ident=None):
+    """Only prepared is retryable; submitting/unknown is never blindly retried."""
+    with connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        row=c.execute("SELECT * FROM outbox WHERE state='prepared'"+
+                      (' AND id=?' if ident else '')+' ORDER BY created LIMIT 1',
+                      (ident,) if ident else ()).fetchone()
+        if not row:
+            c.execute('COMMIT');return None
+        c.execute("UPDATE outbox SET state='submitting' WHERE id=?",(row['id'],))
+        c.execute('INSERT OR REPLACE INTO outbox_submissions VALUES(?,?)',(row['id'],time.time()))
+        c.execute('COMMIT')
+    return dict(row)
+
+
+def recover_stalled_submissions(timeout=60):
+    """Mark old, interrupted submissions uncertain without ever resending them."""
+    with connect() as c:
+        return c.execute("UPDATE outbox SET state='acceptance_unknown' WHERE state='submitting' AND id IN (SELECT id FROM outbox_submissions WHERE started<?)",
+                         (time.time()-timeout,)).rowcount
