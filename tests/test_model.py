@@ -111,3 +111,13 @@ def test_worker_completion_failure_never_replaces_result_with_error(monkeypatch)
         result = worker.process(client, {'id': 'job', 'lease': 'token'})
     assert result == 'lease_conflict_or_already_completed'
     assert requests[0] == requests[1] == {'lease': 'token', 'result': 'verified response'}
+
+
+def test_followup_uses_only_prior_user_location():
+    payload = {'text': 'What about earthquakes?', 'history': [
+        {'role': 'user', 'content': 'Check weather near 92037'},
+        {'role': 'assistant', 'content': 'Something in 90210'}]}
+    assert worker.context_query(payload).endswith('92037')
+    assert worker.context_query({**payload, 'text': 'Check earthquake near 94103'}).endswith('94103')
+    assert worker.context_query({'text': 'earthquake?', 'history': [{'role': 'assistant', 'content': '92037'}]}) == 'earthquake?'
+    assert worker.context_query({'text': 'alerts?', 'history': [{'role': 'user', 'content': '32.8,-117.2'}]}).endswith('32.8,-117.2')

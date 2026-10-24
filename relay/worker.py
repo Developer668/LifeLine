@@ -3,6 +3,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import re
 import signal
 import threading
 import time
@@ -23,6 +24,23 @@ def fetch_official_context(text):
     return build_context(text)
 
 
+LOCATION = re.compile(r'(?<![\d.])(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)(?![\d.])|\b\d{5}\b')
+
+
+def context_query(payload):
+    text = str(payload.get('text', ''))[:2000]
+    if LOCATION.search(text):
+        return text
+    # History is supplied by the gateway only for this authorized incident.
+    # Reuse only an explicit user location, never assistant-generated geography.
+    for item in reversed(payload.get('history', [])[-8:]):
+        if isinstance(item, dict) and item.get('role') == 'user' and isinstance(item.get('content'), str):
+            matches = list(LOCATION.finditer(item['content'][:1000]))
+            if matches:
+                return text + '\nPreviously supplied location: ' + matches[-1].group(0)
+    return text
+
+
 def run_one(job):
     from .engine import policy_response
     if job['kind'] != 'message':
@@ -31,7 +49,7 @@ def run_one(job):
     fallback = policy_response(str(payload.get('text', '')))
     if fallback:
         return fallback
-    context = fetch_official_context(str(payload.get('text', '')))
+    context = fetch_official_context(context_query(payload))
     return infer({**payload, 'context': context})
 
 
