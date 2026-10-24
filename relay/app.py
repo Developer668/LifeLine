@@ -1,20 +1,32 @@
 """RELAY: phone-first prototype. Not an emergency dispatch service."""
-import base64
 import json
 import hashlib
-import hmac
 import os
 import re
 import secrets
 import time
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, model_validator
 from twilio.twiml.voice_response import VoiceResponse
 from twilio.twiml.messaging_response import MessagingResponse
 from . import store, providers
 
-app = FastAPI(title="RELAY phone-first demo", version="0.1.0")
+from contextlib import asynccontextmanager
+import asyncio
+
+@asynccontextmanager
+async def lifespan(app):
+    from .outbox import background_drain
+    stop = asyncio.Event()
+    task = asyncio.create_task(background_drain(stop))
+    try:
+        yield
+    finally:
+        stop.set()
+        await task
+
+app = FastAPI(title="RELAY phone-first demo", version="0.2.0", lifespan=lifespan)
 store.initialize()
 PUBLIC = lambda: os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 
@@ -140,7 +152,7 @@ def worker_complete(request: Request, job_id: str, body: FinishJob):
         import json
         payload = json.loads(job["payload"])
         if payload.get("sms_consent") and payload.get("channel") in ("sms", "voice"):
-            delivery = providers.send_reference(status["incident"], status["text"] if status["state"]=="complete" else "RELAY could not verify an answer because the information service is unavailable. For immediate danger, call your local emergency number directly.", explicit_consent=True)
+            delivery = providers.send_reference(status["incident"], status["text"] if status["state"]=="complete" else "RELAY could not verify an answer because the information service is unavailable. For immediate danger, call your local emergency number directly.", explicit_consent=True, idempotency_key=job_id)
             store.add_event(status["incident"], "reference_send_attempt", delivery)
     return {"state": status["state"]}
 
@@ -153,6 +165,17 @@ async def incoming_sms(request: Request):
     message_sid = str(f.get("MessageSid", ""))
     if not re.fullmatch(r"(?:SM|MM)[a-fA-F0-9]{32}", message_sid):
         raise HTTPException(422, "Invalid MessageSid")
+    command = body.strip().upper()
+    special = (command in ('STOP','STOPALL','UNSUBSCRIBE','CANCEL','END','QUIT','START','UNSTOP')
+        or re.fullmatch(r'LINK\s+([A-Fa-f0-9]{10})', body.strip(), re.I)
+        or emergency_response(body)
+        or re.search(r'\b(camera|video link|visual help)\b', body, re.I)
+        or not body.strip())
+    if not special:
+        store.accept_sms_job(ident, message_sid,
+            {'message_sid': message_sid, 'length': len(body)},
+            {'text': body, 'channel': 'sms', 'sms_consent': True})
+        return xml(MessagingResponse())
     first = store.add_event(ident, "inbound_sms", {"message_sid": message_sid, "length": len(body)}, event_id=message_sid)
     if not first:
         return xml(MessagingResponse())
@@ -176,8 +199,14 @@ async def incoming_sms(request: Request):
     elif re.search(r"\b(camera|video link|visual help)\b", body, re.I):
         delivery = providers.send_reference(ident, make_camera_link(ident), explicit_consent=True)
         store.add_event(ident, "camera_link_delivery", delivery)
-    else:
-        store.enqueue(ident, "message", {"text": body, "channel": "sms", "sms_consent": True})
+    elif not body.strip() and str(f.get('NumMedia', '0')) != '0':
+        response = MessagingResponse()
+        response.message('To share an image securely, text CAMERA for a private browser link. MMS attachment analysis is not enabled.')
+        return xml(response)
+    elif not body.strip():
+        response = MessagingResponse()
+        response.message('Please describe what information you need, or text CAMERA for visual assistance.')
+        return xml(response)
     return xml(MessagingResponse())
 
 
@@ -247,7 +276,7 @@ async def voice_poll(request: Request, incident: str, job_id: str, attempt: int 
         return next_prompt(current["result"] or "I cannot verify that yet.")
     if current and current["state"] == "failed":
         return next_prompt("The information service is temporarily unavailable. I cannot verify an answer.")
-    if attempt >= 2:
+    if attempt >= 12:
         v = VoiceResponse()
         v.say("I am unable to verify that quickly. Please call local emergency services if there is immediate danger. Goodbye.")
         v.hangup()
@@ -276,88 +305,11 @@ def emergency_response(text):
         return EMERGENCY_TEXT if EMERGENCY.search(text) else None
 
 
-def camera_signature(incident, expires):
-    secret = os.getenv("RELAY_LINK_SECRET", os.getenv("DEMO_TOKEN", ""))
-    if len(secret) < 16:
-        raise HTTPException(503, "Camera links not configured")
-    return hmac.new(secret.encode(), f"{incident}:{expires}".encode(), hashlib.sha256).hexdigest()
-
-
-def verify_camera(incident, expires, token):
-    if expires < int(time.time()) or expires > int(time.time()) + 1800:
-        raise HTTPException(403, "Expired camera token")
-    if not secrets.compare_digest(camera_signature(incident, expires), token):
-        raise HTTPException(403, "Bad camera token")
-    if not store.incident_info(incident):
-        raise HTTPException(404, "Incident not found")
-
-
-def make_camera_link(incident):
-    expires = int(time.time()) + 600
-    return PUBLIC() + f"/camera/{incident}?expires={expires}&token={camera_signature(incident, expires)}"
-
-
-@app.post("/demo/incidents/{incident}/camera-link")
-def camera_link(request: Request, incident: str):
-    require_token(request, "DEMO_TOKEN")
-    if not store.incident_info(incident):
-        raise HTTPException(404, "Incident not found")
-    expires = int(time.time())+600
-    token = camera_signature(incident, expires)
-    return {"url": PUBLIC()+f"/camera/{incident}?expires={expires}&token={token}",
-            "expires_at": expires, "requires_user_camera_permission": True}
-
-
-@app.get("/camera/{incident}", response_class=HTMLResponse)
-def camera_page(incident: str, expires: int, token: str):
-    verify_camera(incident, expires, token)
-    return HTMLResponse("""<!doctype html><html><meta name=viewport content="width=device-width,initial-scale=1">
-    <title>RELAY camera sharing</title>
-    <body style="font:16px system-ui;max-width:540px;margin:32px auto;padding:16px">
-    <h2>RELAY visual assistance</h2><p>Only start sharing when it's safe. Your camera is off until you grant access.</p>
-    <video id="preview" autoplay muted playsinline style="width:100%"></video>
-    <p><button id="start">Start camera</button> <button id="send" disabled>Analyze one frame</button>
-    <button id="stop" disabled>Stop</button></p><p id="status"></p>
-    <script>
-      const video=document.querySelector('#preview'),s=document.querySelector('#status');
-      let stream;
-      document.querySelector('#start').onclick=async()=>{
-        try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
-          video.srcObject=stream;s.textContent='Camera active';document.querySelector('#send').disabled=false;
-          document.querySelector('#stop').disabled=false;}catch(e){s.textContent='Camera permission unavailable';}
-      };
-      document.querySelector('#stop').onclick=()=>{
-        if(stream)stream.getTracks().forEach(t=>t.stop());video.srcObject=null;
-        document.querySelector('#send').disabled=true;document.querySelector('#stop').disabled=true;s.textContent='Stopped';
-      };
-      document.querySelector('#send').onclick=async()=>{
-        const c=document.createElement('canvas');c.width=640;c.height=480;
-        c.getContext('2d').drawImage(video,0,0,c.width,c.height);
-        const data=c.toDataURL('image/jpeg',.55).split(',')[1];
-        s.textContent='Sending one frame...';
-        try{const r=await fetch(location.pathname+'/frame'+location.search,{
-          method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({image_base64:data})});
-          s.textContent=r.ok?'Frame queued for review. Return to your call.':'Could not send frame';
-        }catch(e){s.textContent='Network error';}
-      };
-    </script></body></html>""")
-
-
-class CameraFrame(BaseModel):
-    image_base64: str = Field(min_length=12, max_length=300000)
-
-
-@app.post("/camera/{incident}/frame")
-def camera_frame(incident: str, expires: int, token: str, body: CameraFrame):
-    verify_camera(incident, expires, token)
-    try:
-        raw = base64.b64decode(body.image_base64, validate=True)
-        if len(raw) > 200_000 or not raw.startswith(b"\xff\xd8"):
-            raise ValueError("invalid JPEG")
-    except Exception:
-        raise HTTPException(422, "Invalid or oversized frame")
-    job = store.enqueue(incident, "message", {
-        "text": "Describe the visible scene cautiously and mention uncertainties. Never declare a location safe.",
-        "channel": "camera", "sms_consent": False, "image_base64": body.image_base64})
-    return {"state": "queued", "job_id": job, "notice": "Single-frame analysis, not a live video call"}
+# Optional visual assistance shares the incident but uses revocable capabilities.
+from .media import issue_camera_link, install_media
+from .coordination import install_coordination
+make_camera_link = issue_camera_link
+install_media(app)
+install_coordination(app)
+from .middleware import RequestBoundary
+app.add_middleware(RequestBoundary)

@@ -26,7 +26,7 @@ def drain_once(limit=50):
 async def background_drain(stop: asyncio.Event, interval=1.0):
     while not stop.is_set():
         try:
-            await asyncio.to_thread(drain_once)
+            await asyncio.to_thread(drain_once, 4)
         except Exception:
             # Intents stay durable; no private content is printed.
             pass

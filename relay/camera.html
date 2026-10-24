@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>RELAY · Visual assistance</title>
+<style>
+:root{color-scheme:light;font-family:ui-sans-serif,system-ui;color:#153c37;background:#f3f6f1}*{box-sizing:border-box}body{margin:0}main{max-width:600px;margin:0 auto;padding:28px 22px}header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #bbcdc3;padding-bottom:22px}.wordmark{font-weight:800;letter-spacing:.16em}small{font-size:.8rem}h1{font-size:2.2rem;line-height:1.1;font-weight:600;margin:36px 0 18px}p{line-height:1.6;max-width:48ch}.notice{font-size:.9rem;color:#465e59}video{width:100%;aspect-ratio:4/3;background:#153c37;object-fit:contain;margin:18px 0;border-radius:8px}button{font:inherit;min-height:48px;padding:12px 18px;border-radius:5px;border:1px solid #153c37;background:transparent;color:inherit;cursor:pointer}button:first-child{background:#153c37;color:white}button:disabled{opacity:.45;cursor:default}.controls{display:flex;gap:10px;flex-wrap:wrap}:focus-visible{outline:3px solid #c27628;outline-offset:4px}#status{min-height:3em}footer{border-top:1px solid #bbcdc3;margin-top:32px;padding-top:18px;font-size:.8rem}
+</style></head><body><main>
+<header><span class="wordmark">RELAY</span><small>OPTIONAL VISUAL ASSISTANCE</small></header>
+<h1>Share what you can see.</h1><p>When it is safe, share a single camera frame to add context to your call or text. Your camera stays off until you choose to start.</p>
+<p class="notice">RELAY is an information prototype, not a monitored emergency service. If someone is in immediate danger, call your local emergency number.</p>
+<video id="preview" aria-label="Your camera preview" autoplay muted playsinline></video>
+<div class="controls"><button id="start">Start camera</button><button id="send" disabled>Analyze one frame</button><button id="stop">Stop sharing</button></div>
+<p id="status" role="status" aria-live="polite">This private link expires in ten minutes. No frames are sent automatically.</p>
+<footer>Each frame is processed with AI and may be misunderstood. An observation cannot establish that a place is safe.</footer>
+</main><script>
+const video=document.querySelector('#preview'),status=document.querySelector('#status'),start=document.querySelector('#start'),send=document.querySelector('#send'),stop=document.querySelector('#stop');
+let stream=null,timer=null,ended=false;
+const params=new URLSearchParams(location.search),expiry=Number(params.get('expires'))*1000;
+function endCamera(){if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;video.srcObject=null;send.disabled=true;}
+function endpoint(suffix){return location.pathname+suffix+location.search;}
+async function revoke(){ended=true;endCamera();start.disabled=true;clearTimeout(timer);try{await fetch(endpoint('/stop'),{method:'POST',keepalive:true});}catch{}status.textContent='Sharing stopped. Request a new link to share again.';stop.disabled=true;}
+start.onclick=async()=>{if(ended)return;try{if(!navigator.mediaDevices)throw new Error('A secure HTTPS connection is required.');stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:640}},audio:false});video.srcObject=stream;await video.play();start.disabled=true;send.disabled=false;status.textContent='Preview is active. Choose Analyze one frame when ready.';}catch(e){endCamera();status.textContent=e.name==='NotAllowedError'?'Camera permission was denied. You can continue by phone or text.':e.message;}};
+stop.onclick=revoke;
+async function poll(id,tries=0){if(ended)return;try{const r=await fetch(endpoint('/jobs/'+encodeURIComponent(id)));if(!r.ok)throw new Error('Could not retrieve the observation.');const j=await r.json();if(j.state==='complete'){status.textContent=j.result;send.disabled=false;return;}if(j.state==='failed')throw new Error('Analysis is unavailable. Continue by phone or text.');if(tries>=40)throw new Error('Analysis is taking longer than expected. Continue by phone or text.');timer=setTimeout(()=>poll(id,tries+1),2000);}catch(e){status.textContent=e.message;send.disabled=ended;}}
+send.onclick=async()=>{if(!stream||ended)return;send.disabled=true;const c=document.createElement('canvas');const scale=Math.min(1,640/video.videoWidth);c.width=Math.round(video.videoWidth*scale);c.height=Math.round(video.videoHeight*scale);if(!c.width||!c.height){status.textContent='Camera is still starting. Try again.';send.disabled=false;return;}c.getContext('2d').drawImage(video,0,0,c.width,c.height);status.textContent='Sending one frame for analysis…';try{const r=await fetch(endpoint('/frame'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_base64:c.toDataURL('image/jpeg',.55).split(',')[1]})});const j=await r.json();if(!r.ok)throw new Error(j.detail||'Could not send frame.');poll(j.job_id);}catch(e){status.textContent=e.message;send.disabled=ended;}};
+setTimeout(()=>{ended=true;endCamera();start.disabled=stop.disabled=true;clearTimeout(timer);status.textContent='This link has expired. Request a new link by phone or text.';},Math.max(0,expiry-Date.now()));
+window.addEventListener('pagehide',()=>{endCamera();navigator.sendBeacon(endpoint('/stop'));});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){endCamera();start.disabled=ended;status.textContent='Camera paused while this page is hidden.';}});
+</script></body></html>

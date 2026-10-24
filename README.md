@@ -1,156 +1,114 @@
-# RELAY: Phone-first multimodal coordination prototype
+# RELAY
 
-Primary interface: a telephone number. Inbound SMS and cellular calls are handled via
-Twilio's signed webhook API. An optional, user-triggered HTTPS camera link captures an
-explicitly selected frame on iPhone Safari or Android Chrome. This is not a native
-FaceTime/Google Meet integration and the camera path is not yet continuous video.
+Phone-first emergency information and consenting trusted-contact coordination. FastAPI + durable SQLite gateway, Twilio voice/SMS, outbound MoLab worker, MiniCPM-o 4.5, NWS and USGS context, optional browser camera frames.
 
-**RELAY is an unmonitored hackathon prototype, not emergency response infrastructure.
-It never dispatches police, firefighters, ambulances or 911. Do not publish it as a
-replacement for official emergency services.**
+**An unmonitored information prototype. RELAY does not dispatch emergency services, diagnose, confirm safety, or guarantee assistance.** The immediate-risk referral works without model availability. Live carrier operation requires your own Twilio configuration. See [verification status](docs/VERIFICATION.md) for measured evidence and remaining gates.
 
-## Architecture (adapted from NeuroLoop)
+## Start locally
 
-Twilio phone/SMS → HTTPS FastAPI gateway → SQLite/WAL durable queue → outbound
-MoLab worker → MiniCPM-o 4.5 vLLM-Omni OpenAI-compatible server (same GPU container)
-→ job result → TwiML voice reply or consented SMS outbox.
+```sh
+uv sync --group dev
+uv run python scripts/setup_local.py
+uv run python -m relay serve
+```
 
-The persistent gateway and inference worker are separate processes. This recreates the
-NeuroLoop NotebookWorker approach: remote workers claim jobs over outbound HTTPS and
-complete them under a lease. The notebook does not need an open inbound network port.
-The model is called on localhost from inside MoLab. Worker concurrency defaults to 2;
-the single-GPU upstream vLLM-Omni default has max_num_seqs=4, and real capacity must
-be determined by load tests, not by counting queued jobs.
+The setup creates private, ignored `.env` secrets once. Existing files are preserved. The gateway listens on loopback port8000 and disables access logs so capability tokens do not enter URL logs. Configuration changes require restarting the gateway.
 
-## 1. Local bootstrap (free, without Twilio or GPU)
+For an explicitly labeled CPU backup in another terminal:
 
-Open Terminal on your Mac:
+```sh
+RELAY_ALLOW_SIMULATION=true uv run python -m relay worker
+uv run python scripts/demo.py --runs 3
+```
 
-    cd ~/Desktop/Programming/Hackathons/RELAY
-    uv sync --group dev
+The default worker **refuses** to substitute simulated inference when a model is missing. To use MoLab, follow [GPU setup and verification](scripts/gpu_README.md). Keep the model listening on MoLab localhost; only the worker connects outbound to this gateway. Never run a simulated worker alongside a real worker during live verification.
 
-Create a local .env using .env.example and fill in long unique values for
-DEMO_TOKEN and RELAY_WORKER_TOKEN. Never commit it.
+## Phone setup
 
-Start the API (terminal 1):
+Set these values in `.env`, then restart:
 
-    set -a; source .env; set +a
-    uv run uvicorn relay.app:app --host 127.0.0.1 --port 8000
+```dotenv
+PUBLIC_BASE_URL=https://your-public-host
+TWILIO_ACCOUNT_SID=your_account_sid
+TWILIO_AUTH_TOKEN=your_auth_token
+TWILIO_NUMBER=your_twilio_number
+TWILIO_LIVE_SEND=false
+```
 
-Start the simulated outbound worker (terminal 2):
+In your Twilio number configuration:
 
-    set -a; source .env; set +a
-    uv run python -m relay.worker
+| Purpose | POST webhook |
+| --- | --- |
+| Incoming SMS | `https://your-public-host/twilio/sms` |
+| Incoming voice | `https://your-public-host/twilio/voice` |
+| Delivery receipts | Set automatically per outbound send to `/twilio/status?outbox_id=…` |
 
-Send a demo request using the demo bearer token (terminal 3):
+Every webhook verifies the Twilio signature against the configured public URL, including query parameters. A reverse proxy must preserve paths, query parameters and request bodies. Caller ID alone never links voice and text context.
 
-    curl -sS http://127.0.0.1:8000/demo/message \
-      -H "Authorization: Bearer YOUR_DEMO_TOKEN" \
-      -H 'Content-Type: application/json' \
-      -d '{"incident_id":"trial_1","text":"Is there a weather alert for 92037?"}'
+1. Call and ask your question. Trial voice uses Gather/Say; it polls only the current turn's job with a bounded wait.
+2. To share voice context with SMS, ask to **link text context**. Send `LINK CODE` from the calling phone to the Twilio number within five minutes. The ten-character code is single-use; the association expires in one hour.
+3. Ask a question by SMS. Retries with the same MessageSid do not create another job.
+4. Text `CAMERA`, or say “text me a camera link,” for a private ten-minute visual sharing link. Open only when safe. Choose Start camera, then Analyze one frame. Stop sharing revokes the link.
+5. `STOP` disables app-initiated texts to that phone; `START` enables them again.
 
-Read the result:
+Inbound MMS attachments are not downloaded. An MMS without text receives instructions to use the secure browser camera path. Individual JPEG frames are supported; continuous video and native meeting bots are outside this build.
 
-    curl -sS http://127.0.0.1:8000/demo/incidents/trial_1 \
-      -H "Authorization: Bearer YOUR_DEMO_TOKEN"
+Outbound texts are simulated until `TWILIO_LIVE_SEND=true`. States distinguish prepared, simulated, submitting, provider acceptance, confirmed delivery, failure, and unknown acceptance. Prepared replies recover automatically after restarts; uncertain carrier submissions require reconciliation and are never blindly repeated. Acceptance is not delivery or reading. A trial account may restrict recipient numbers or personalized content: test your actual account before presenting a real outbound reference message. Never describe simulated outbox entries as sent texts.
 
-Tests:
+## HTTPS
 
-    uv run python -m pytest -q
+A Cloudflare Quick Tunnel is suitable for development. The combined launcher starts the tunnel, saves the public URL, then starts the gateway:
 
-No GPU/model endpoint is loaded unless MODEL_BASE_URL is set. Without it,
-worker replies are visibly labeled "RELAY simulation."
+```sh
+uv run python scripts/serve_public.py
+```
 
-## 2. MoLab RTX PRO 6000 Blackwell
+Alternatively, start the tunnel separately:
 
-The prior NeuroLoop MoLab URL responded HTTP 410 (sandbox terminated). Create a new
-MoLab notebook and attach the 96GB NVIDIA GPU. Pair with your agent through the
-new notebook's marimo pair prompt, not with a terminated notebook address.
+```sh
+cloudflared tunnel --url http://127.0.0.1:8000
+```
 
-Upstream supported serving route (vLLM-Omni >=0.21.0, Linux, GPU):
+Copy the generated HTTPS URL to `PUBLIC_BASE_URL`, restart the gateway, and update Twilio webhooks. Each tunnel has a temporary URL; keep the process running. Signed Twilio webhooks, bearer-protected worker/admin routes, and scoped camera/contact capabilities authenticate at the application layer. Interactive Cloudflare Access login must not intercept Twilio callbacks or the outbound worker.
 
-    # In a vLLM-Omni environment in the vllm-omni repo:
-    vllm serve openbmb/MiniCPM-o-4_5 --omni \
-        --trust-remote-code \
-        --chat-template vllm_omni/transformers_utils/chat_templates/minicpmo45_native.jinja \
-        --chat-template-content-format openai \
-        --host 127.0.0.1 --port 8099
+For a stable hostname, use a named Cloudflare Tunnel with [the template](deploy/cloudflared.yml.example). [Docker Compose](deploy/compose.yml) provides a persistent-volume gateway and token-based tunnel. Configure its public hostname to `http://gateway:8000` in the tunnel dashboard; the local example uses `http://127.0.0.1:8000`. Public model ports are unnecessary.
 
-Use the official recipe for the appropriate dependency installation:
-https://github.com/vllm-project/vllm-omni/blob/main/recipes/OpenBMB/MiniCPM-o-4_5.md
+## API and contacts
 
-Check the local server:
+Operator/demo routes require `Authorization: Bearer $DEMO_TOKEN`; worker routes require the separate `$RELAY_WORKER_TOKEN`. These credentials grant operator access and must not be distributed to callers. There is no public incident-list API.
 
-    curl -sS http://127.0.0.1:8099/health
+| Route | Function |
+| --- | --- |
+| `POST /demo/message` | Queue `{incident_id,text}`; immediate risks return a deterministic referral |
+| `GET /demo/incidents/{id}` | Inspect that incident's jobs/outbox |
+| `POST /demo/incidents/{id}/camera-link` | Issue a scoped, expiring, revocable camera capability |
+| `POST /demo/incidents/{id}/contacts` | Enroll `{name,phone}`, returning a private consent URL |
+| `GET /demo/incidents/{id}/contacts` | Inspect contact consent/request states |
+| `POST /demo/incidents/{id}/contact-requests` | Approved request to an enrolled participant |
+| `POST /worker/claim` | Atomically lease one job; same-incident jobs serialize |
+| `POST /worker/jobs/{id}/complete` | Complete with exactly one of result/error and current lease |
+| `GET /health` | Gateway health only; never claims untested GPU/carrier readiness |
 
-Start relay.worker on the same GPU machine with its package accessible and:
-RELAY_API_URL=https://YOUR_RELAY_PUBLIC_GATEWAY
-RELAY_WORKER_TOKEN=same as gateway
-MODEL_BASE_URL=http://127.0.0.1:8099
-MODEL_NAME=openbmb/MiniCPM-o-4_5
-RELAY_WORKER_CONCURRENCY=2
+A trusted contact must open their private enrollment link and explicitly consent before requests can be sent. The enrolling user shares invitations; RELAY does not send unsolicited invitations. Contact requests require `approved:true`, `contact_id`, `message` and a unique `idempotency_key` (8–100characters). An optional `fallback_id` preapproves one other consenting contact. Declining triggers at most one fallback. An acknowledgement means receipt; assistance must be separately reported after acknowledgement. Participants can revoke consent using their enrollment link. Contact actions are operator-approved API workflows; free-form model output cannot trigger them.
 
-Use the existing pair-connected marimo process to install package dependencies
-and start background processes; the notebook is the control plane, NOT the public
-webhook endpoint. MoLab sessions are time-limited; their shutdown is NOT a production
-availability guarantee. No persistent GPU process is running until this step succeeds.
+## Data, isolation and failure behavior
 
-## 3. Public gateway (for Twilio and MoLab)
+NWS weather alerts and USGS earthquake reports include source URLs, source/retrieval timestamps, geographic relevance, and explicit stale/unavailable states. ZIP locations are approximate centroids. Empty alert results never establish safety. No generic web search is substituted for official emergency feeds.
 
-The Mac gateway requires a stable publicly reachable HTTPS hostname. Cloudflare
-Tunnel is an option if you have configured a tunnel and DNS record. Only expose the
-authenticated FastAPI gateway, never the raw GPU model port.
+SQLite WAL survives worker/notebook restarts. Claims carry unguessable expiring leases; late completions fail. Three exhausted attempts become a terminal failure. Only same-incident history enters an inference payload; a call poll cannot consume another call's or a camera job's answer. Image bytes are removed from completed job payloads. Camera capabilities are hashed at rest, expire after ten minutes, limit frame submission, and revoke on Stop sharing.
 
-Set PUBLIC_BASE_URL=https://YOUR_PUBLIC_DOMAIN (no trailing slash).
-Configure the Twilio number with POST webhooks:
-  - Voice: /twilio/voice
-  - SMS:   /twilio/sms
+The model adapter accepts bounded text/image requests and parses optional audio from independent output choices. GPU audio generation is separately verified before any use. Default phone speech uses Twilio Say; model-generated audio is not served through Play in this release.
 
-Set TWILIO_AUTH_TOKEN so Twilio signature validation is enforced. Confirm inbound
-number capabilities and trial rules in your own Twilio Console first.
+## Verify
 
-Trial Voice: speech input uses TwiML Gather and reply uses Say. There is NO Twilio
-Media Stream, no native full-duplex audio, and only a bounded poll/redirect loop.
-Try this with your own verified test number.
+```sh
+uv run pytest -q
+uv run python scripts/load_test.py
+uv run python scripts/demo.py --runs 3
+```
 
-Trial SMS: dynamic outgoing text is not guaranteed and is prohibited on new
-free trial template restrictions. TWILIO_LIVE_SEND=false is the default. Setting
-it true is an EXPLICIT paid/capability-bearing operation and should only be done
-after verifying the account and carrier registration. The outbox distinguishes
-simulated, accepted_by_provider and carrier_rejected. "Accepted" does not
-mean delivered/read.
+Load results distinguish HTTP/SQLite queue processing from GPU throughput. GPU-only measurements use `scripts/benchmark_gpu.py` at concurrency1,2,4. Reports under `reports/` are local evidence, not production capacity promises. Follow [the demo and release checklist](docs/DEMO.md).
 
-## 4. Mobile camera, both platforms
+## Source layout
 
-An authorized operator issues a signed ten-minute link with:
-POST /demo/incidents/INCIDENT_ID/camera-link
-using the demo bearer token. RELAY can send this through SMS when custom text is
-permitted. Opening the link requests browser camera permission (NOT automatic).
-Press "Analyze one frame" to send a compressed JPEG to the same incident.
-
-Only a single captured frame is supported in this starter. Live video calling,
-continuous sampling, interactive visual speech and native FaceTime or Meet
-bots are NOT yet implemented. Add those after the phone/SMS core is stable.
-
-## 5. Emergency information
-
-The worker recognizes a US ZIP code and performs an approximate ZIP-centroid lookup,
-then queries NWS active weather alerts. Missing or failing sources never mean safe
-conditions; local evacuation orders require separate local-authority data.
-The selected location is a rough centroid, NOT a reliable caller GPS location.
-
-## 6. Security and capacity notes
-
-- Twilio-signed calls and SMS only; unauthenticated webhook requests are rejected.
-- Worker token is independent from demo token; no secrets in Git.
-- One leased job per incident; retries and lease expirations are bounded.
-- Dynamic outbound contact sending is off by default.
-- Camera tokens expire after ten minutes. Frames are temporarily stored as jobs in
-  the local SQLite demo database; use a strict deletion/retention policy before
-  involving real people.
-- SQLite WAL is for a small single-host prototype. Replace with a networked durable
-  queue/database for distributed always-on application servers.
-- Callback timeouts, Twilio trial restrictions and MoLab notebook shutdowns prevent
-  this version from being suitable for real emergencies.
-- Simulated concurrency tests do NOT prove 96GB GPU throughput.
-- Contact coordination/dispatch, MMS ingestion and continuous video are not shipped.
+`relay/app.py` handles phone webhooks and operator APIs; `store.py` persists jobs, identity associations and outbox state; `providers.py` handles carrier calls. `engine/` normalizes official data and validates action plans. `coordination.py` owns consent and contact state. `media.py` and `camera.html` implement optional frames. `model.py` and `worker.py` run on MoLab. Shared public contracts are recorded in [CONTRACTS.md](docs/CONTRACTS.md).

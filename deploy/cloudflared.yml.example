@@ -1,0 +1,7 @@
+# Named tunnel for a stable production hostname. Set your actual tunnel UUID and host.
+tunnel: YOUR_TUNNEL_UUID
+credentials-file: /absolute/path/to/YOUR_TUNNEL_UUID.json
+ingress:
+  - hostname: relay.example.com
+    service: http://127.0.0.1:8000
+  - service: http_status:404
