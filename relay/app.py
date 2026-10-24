@@ -1,5 +1,6 @@
 """RELAY: phone-first prototype. Not an emergency dispatch service."""
 import base64
+import json
 import hashlib
 import hmac
 import os
@@ -8,7 +9,7 @@ import secrets
 import time
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from twilio.twiml.voice_response import VoiceResponse
 from twilio.twiml.messaging_response import MessagingResponse
 from . import store, providers
@@ -31,7 +32,10 @@ def require_token(request, env):
 
 
 async def twilio_form(request):
-    form = dict(await request.form())
+    incoming=await request.form()
+    if any(len(incoming.getlist(key)) != 1 for key in incoming):
+        raise HTTPException(400,'Duplicate webhook fields')
+    form = dict(incoming)
     url = PUBLIC() + request.url.path + (("?" + request.url.query) if request.url.query else "")
     if not providers.validate_twilio(url, form, request.headers.get("X-Twilio-Signature", "")):
         raise HTTPException(403, "Invalid Twilio signature")
@@ -53,16 +57,16 @@ def call_incident(form):
 
 def text_incident(form):
     phone = str(form.get("From", ""))
-    if not phone.startswith("+") or len(phone) > 20:
+    if not re.fullmatch(r"\+[1-9]\d{6,14}", phone):
         raise HTTPException(422, "Invalid sender")
     ident = "sms-" + hashlib.sha256(phone.encode()).hexdigest()[:28]
     store.upsert_incident(ident, phone, "sms")
-    return ident
+    return store.resolve_sms(ident)
 
 
-def next_prompt(reply):
+def next_prompt(reply, turn=None):
     response = VoiceResponse()
-    g = response.gather(input="speech dtmf", action=PUBLIC()+"/twilio/voice/turn",
+    g = response.gather(input="speech dtmf", action=PUBLIC()+"/twilio/voice/turn?turn="+(turn or secrets.token_urlsafe(16)),
                         method="POST", speech_timeout="auto", timeout=5)
     g.say(reply[:600])
     response.say("No response received. Goodbye.")
@@ -72,6 +76,9 @@ def next_prompt(reply):
 @app.get("/health")
 def health():
     return {"status": "ok", "mode": os.getenv("RELAY_MODE", "demo"),
+            "readiness": {"twilio_configured": all(os.getenv(k) for k in ('TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_NUMBER')),
+                          "live_send_enabled": os.getenv('TWILIO_LIVE_SEND','false').lower()=='true',
+                          "gpu_verified": False, "carrier_verified": False},
             "notice": "Gateway health does not establish GPU readiness."}
 
 
@@ -84,9 +91,9 @@ class DemoMessage(BaseModel):
 async def demo_message(request: Request, body: DemoMessage):
     require_token(request, "DEMO_TOKEN")
     store.upsert_incident(body.incident_id, channel="demo")
-    if EMERGENCY.search(body.text):
+    if emergency_response(body.text):
         store.add_event(body.incident_id, "safety_fallback", {"emergency": True})
-        return {"state": "immediate", "response": EMERGENCY_TEXT}
+        return {"state": "immediate", "response": emergency_response(body.text)}
     job_id = store.enqueue(body.incident_id, "message",
         {"text": body.text, "channel": "demo", "sms_consent": False})
     return {"state": "queued", "job_id": job_id, "incident_id": body.incident_id}
@@ -112,6 +119,14 @@ class FinishJob(BaseModel):
     result: str | None = Field(default=None, max_length=1800)
     error: str | None = Field(default=None, max_length=1800)
 
+    @model_validator(mode='after')
+    def exactly_one(self):
+        if (self.result is None) == (self.error is None):
+            raise ValueError('Provide exactly one result or error')
+        if not (self.result or self.error or '').strip():
+            raise ValueError('Response cannot be blank')
+        return self
+
 
 @app.post("/worker/jobs/{job_id}/complete")
 def worker_complete(request: Request, job_id: str, body: FinishJob):
@@ -119,13 +134,13 @@ def worker_complete(request: Request, job_id: str, body: FinishJob):
     status = store.finish(job_id, body.lease, body.result, body.error)
     if not status:
         raise HTTPException(409, "Job missing, expired or already completed")
-    if status["state"] == "complete":
+    if status["state"] in ("complete","failed"):
         with store.connect() as c:
             job = c.execute("SELECT payload FROM jobs WHERE id=?", (job_id,)).fetchone()
         import json
         payload = json.loads(job["payload"])
         if payload.get("sms_consent") and payload.get("channel") in ("sms", "voice"):
-            delivery = providers.send_reference(status["incident"], status["text"], explicit_consent=True)
+            delivery = providers.send_reference(status["incident"], status["text"] if status["state"]=="complete" else "RELAY could not verify an answer because the information service is unavailable. For immediate danger, call your local emergency number directly.", explicit_consent=True)
             store.add_event(status["incident"], "reference_send_attempt", delivery)
     return {"state": status["state"]}
 
@@ -141,8 +156,23 @@ async def incoming_sms(request: Request):
     first = store.add_event(ident, "inbound_sms", {"message_sid": message_sid, "length": len(body)}, event_id=message_sid)
     if not first:
         return xml(MessagingResponse())
-    if EMERGENCY.search(body):
-        providers.send_reference(ident, EMERGENCY_TEXT, explicit_consent=True)
+    if body.strip().upper() in ('STOP','STOPALL','UNSUBSCRIBE','CANCEL','END','QUIT'):
+        store.set_optout(str(f['From']),True)
+        return xml(MessagingResponse())
+    if body.strip().upper() in ('START','UNSTOP'):
+        store.set_optout(str(f['From']),False)
+        return xml(MessagingResponse())
+    match = re.fullmatch(r'LINK\s+([A-Fa-f0-9]{10})',body.strip(),re.I)
+    if match:
+        sms_id='sms-'+hashlib.sha256(str(f['From']).encode()).hexdigest()[:28]
+        target=store.redeem_link(sms_id,str(f['From']),match.group(1))
+        response=MessagingResponse()
+        response.message('Voice and text context linked for one hour.' if target else 'Link code invalid or expired. Ask for a new code during your call.')
+        return xml(response)
+    if emergency_response(body):
+        response=MessagingResponse()
+        response.message(emergency_response(body))
+        return xml(response)
     elif re.search(r"\b(camera|video link|visual help)\b", body, re.I):
         delivery = providers.send_reference(ident, make_camera_link(ident), explicit_consent=True)
         store.add_event(ident, "camera_link_delivery", delivery)
@@ -159,39 +189,60 @@ async def incoming_voice(request: Request):
 
 
 @app.post("/twilio/voice/turn")
-async def voice_turn(request: Request):
+async def voice_turn(request: Request, turn: str | None = None):
     f = await twilio_form(request)
     incident = call_incident(f)
     spoken = str(f.get("SpeechResult", "") or f.get("Digits", ""))[:2000]
     if not spoken:
         return next_prompt("I did not hear you. Please repeat your request.")
-    store.add_event(incident, "voice_turn", {"text_length": len(spoken)})
-    if EMERGENCY.search(spoken):
+    # TwiML Gather actions carry a server-created turn identifier, stable on retries.
+    # Legacy direct calls get content-derived deduplication, never a second send.
+    turn_key=incident+':'+(turn or hashlib.sha256(spoken.encode()).hexdigest())
+    cached=store.voice_cached(turn_key)
+    if cached:
+        return Response(content=cached,media_type='application/xml')
+    def remember(response):
+        store.cache_voice(turn_key,response.body.decode())
+        return response
+    if not store.add_event(incident, "voice_turn", {"text_length": len(spoken)},event_id=turn_key):
+        cached=store.voice_cached(turn_key)
+        if cached:
+            return Response(content=cached,media_type='application/xml')
+        raise HTTPException(503,'This turn is already being processed',headers={'Retry-After':'1'})
+    if emergency_response(spoken):
         v = VoiceResponse()
-        v.say(EMERGENCY_TEXT)
+        v.say(emergency_response(spoken))
         v.hangup()
-        return xml(v)
+        return remember(xml(v))
+    if re.search(r"\b(link|connect)\b.*\b(text|sms|context|phone)\b|\blink code\b",spoken,re.I):
+        try:
+            code=store.create_link(incident)
+        except ValueError:
+            return remember(next_prompt('Your caller number is unavailable, so I cannot securely link text context.'))
+        return remember(next_prompt('To link this call with text, send LINK followed by '+ ' '.join(code) + ' to this number within five minutes. The code works once from your calling number.'))
     if re.search(r"\b(text me|send me)\b.*\b(camera|video|visual)\b", spoken, re.I):
         delivery = providers.send_reference(incident, make_camera_link(incident), explicit_consent=True)
         store.add_event(incident, "camera_link_delivery", delivery)
         if delivery["state"] == "accepted_by_provider":
-            return next_prompt("I sent a camera link to your phone. Please open it only when safe. What else do you need?")
-        return next_prompt("I generated a camera link, but this phone account cannot deliver a personalized text right now. What else do you need?")
-    store.enqueue(incident, "message", {"text": spoken, "channel": "voice",
+            return remember(next_prompt("The carrier accepted your camera link text. Delivery is not confirmed. Please open it only when safe. What else do you need?"))
+        return remember(next_prompt("I generated a camera link, but this phone account cannot deliver a personalized text right now. What else do you need?"))
+    job_id=store.enqueue(incident, "message", {"text": spoken, "channel": "voice",
                    "sms_consent": bool(re.search(r"\b(text me|send (me )?a text|sms me)\b", spoken, re.I))})
     v = VoiceResponse()
     v.say("I'm checking that. Please stay on the line.")
     v.pause(length=2)
-    v.redirect(PUBLIC()+"/twilio/voice/poll?incident="+incident+"&attempt=0", method="POST")
-    return xml(v)
+    v.redirect(PUBLIC()+"/twilio/voice/poll?incident="+incident+"&job_id="+job_id+"&attempt=0", method="POST")
+    return remember(xml(v))
 
 
 @app.post("/twilio/voice/poll")
-async def voice_poll(request: Request, incident: str, attempt: int = 0):
+async def voice_poll(request: Request, incident: str, job_id: str, attempt: int = 0):
     f = await twilio_form(request)
     if call_incident(f) != incident:
         raise HTTPException(403, "Wrong call")
-    current = store.latest(incident)
+    current = store.job_for(incident,job_id)
+    if not current:
+        raise HTTPException(404,"Job not found for this call")
     if current and current["state"] == "complete":
         return next_prompt(current["result"] or "I cannot verify that yet.")
     if current and current["state"] == "failed":
@@ -203,8 +254,26 @@ async def voice_poll(request: Request, incident: str, attempt: int = 0):
         return xml(v)
     v = VoiceResponse()
     v.pause(length=3)
-    v.redirect(PUBLIC()+f"/twilio/voice/poll?incident={incident}&attempt={attempt+1}", method="POST")
+    v.redirect(PUBLIC()+f"/twilio/voice/poll?incident={incident}&job_id={job_id}&attempt={attempt+1}", method="POST")
     return xml(v)
+
+
+@app.post('/twilio/status')
+async def delivery_status(request: Request, outbox_id: str | None = None):
+    form=await twilio_form(request)
+    sid=str(form.get('MessageSid',''))
+    if not re.fullmatch(r'(?:SM|MM)[a-fA-F0-9]{32}',sid):
+        raise HTTPException(422,'Invalid MessageSid')
+    store.delivery_update(sid,str(form.get('MessageStatus','')),outbox_id)
+    return Response(status_code=204)
+
+
+def emergency_response(text):
+    try:
+        from .engine import policy_response
+        return policy_response(text)
+    except ImportError:
+        return EMERGENCY_TEXT if EMERGENCY.search(text) else None
 
 
 def camera_signature(incident, expires):
