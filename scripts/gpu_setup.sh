@@ -7,6 +7,7 @@ command -v nvidia-smi >/dev/null || { echo 'No NVIDIA GPU available.' >&2; exit 
 command -v uv >/dev/null || { echo 'Install uv in the MoLab session first.' >&2; exit 1; }
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
 RELAY_GPU_DIR="${RELAY_GPU_DIR:-$PWD/relay-gpu}"
+RELAY_PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OMNI_REV="${OMNI_REV:-7f90d24d76705c8ee901a5d049a285fcbcbaa816}"
 mkdir -p "$RELAY_GPU_DIR"
 uv venv --python 3.12 "$RELAY_GPU_DIR/.venv"
@@ -22,6 +23,7 @@ uv pip install -e "$RELAY_GPU_DIR/vllm-omni" stepaudio2-minicpmo httpx 'pydantic
 # Pin compiler tools to CUDA13.0: unconstrained resolution can choose13.4 while
 # torch ships13.0 runtime headers, causing FlashInfer compilation failures.
 uv pip install nvidia-cuda-nvcc==13.0.88 nvidia-cuda-crt==13.0.88 nvidia-nvvm==13.0.88
+python "$RELAY_PROJECT_DIR/scripts/gpu_patch.py"
 # Do not install Omni's [dev] extra: it supplies a conflicting Step-Audio distribution.
 python -c 'import torch, vllm_omni; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))'
 uv pip freeze > "$RELAY_GPU_DIR/installed-requirements.txt"

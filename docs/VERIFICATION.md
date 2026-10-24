@@ -7,7 +7,7 @@ Build workspace: LifeLine, bootstrapped from the existing sibling RELAY starter.
 - `uv sync --group dev`: reproducible lockfile/environment installation succeeded.
 - `uv run pytest -q`: **87 passed**, no failed tests; one upstream FastAPI/Starlette TestClient deprecation warning. Includes baseline, official data, model parsing/failure bounds, signed phone contracts, secure linking/history, incident isolation, camera validation/revocation, contact consent/fallback, durable outbox and SMS crash recovery.
 - `uv run python -m compileall -q relay scripts`: passed.
-- Camera browser JavaScript `node --check`: passed.
+- Camera browser JavaScript `node --check`: passed. Actual browser layout at390px: content width390px, no horizontal overflow; analysis disabled initially. Physical camera permission/capture not asserted.
 - Public HTTPS `/health`:200; unauthenticated worker claim and private incident access:401. Tunnel encrypted connection established through Cloudflare. Temporary development gateway, no uptime guarantee.
 - Live NWS coordinates32.8328,-117.2713: available, one alert, root updated2026-10-24T22:05:07Z, measured2.029s.
 - Live USGS same point: available, eight events, generated2026-10-24T22:09:48Z, measured0.492s.

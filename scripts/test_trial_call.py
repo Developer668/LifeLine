@@ -20,6 +20,8 @@ def main():
     evidence=root/'.runtime/trial-call.json'
     if evidence.exists():
         data=json.loads(evidence.read_text())
+        if data.get('state') in ('submitting','acceptance_unknown'):
+            raise SystemExit('Prior call acceptance is uncertain; inspect Twilio logs before any retry.')
         if data.get('sid'):
             c=Client(os.environ['TWILIO_ACCOUNT_SID'],os.environ['TWILIO_AUTH_TOKEN'],http_client=TwilioHttpClient(timeout=10))
             call=c.calls(data['sid']).fetch()
@@ -33,6 +35,8 @@ def main():
     c=Client(os.environ['TWILIO_ACCOUNT_SID'],os.environ['TWILIO_AUTH_TOKEN'],http_client=TwilioHttpClient(timeout=10))
     if c.api.accounts(os.environ['TWILIO_ACCOUNT_SID']).fetch().type!='Trial':
         raise SystemExit('Refusing this free-trial-only test on a paid account.')
+    evidence.parent.mkdir(exist_ok=True)
+    evidence.write_text(json.dumps({'state':'submitting','time_limit_seconds':45})+'\n')
     try:
         call=c.calls.create(to=os.environ['RELAY_TEST_RECIPIENT'],from_=os.environ['TWILIO_NUMBER'],
             url=os.environ['PUBLIC_BASE_URL'].rstrip('/')+'/twilio/voice',method='POST',time_limit=45,timeout=15)
@@ -40,7 +44,12 @@ def main():
         evidence.write_text(json.dumps(data,indent=2)+'\n')
         print(json.dumps(data))
     except TwilioRestException as e:
-        print(json.dumps({'accepted':False,'status':e.status,'code':e.code,'message':e.msg}))
+        state='rejected' if 400 <= e.status < 500 else 'acceptance_unknown'
+        evidence.write_text(json.dumps({'state':state,'status':e.status,'code':e.code})+'\n')
+        print(json.dumps({'accepted':False,'state':state,'status':e.status,'code':e.code,'message':e.msg}))
         raise SystemExit(1)
+    except Exception:
+        evidence.write_text(json.dumps({'state':'acceptance_unknown'})+'\n')
+        raise SystemExit('Call acceptance is uncertain. Inspect Twilio logs before any retry.')
 
 if __name__=='__main__':main()
