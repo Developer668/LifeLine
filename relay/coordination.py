@@ -28,6 +28,9 @@ def initialize():
           fallback_used INTEGER NOT NULL DEFAULT 0, parent_id TEXT UNIQUE,
           delivery_state TEXT NOT NULL, created REAL NOT NULL,
           idempotency_key TEXT NOT NULL, UNIQUE(incident,idempotency_key));
+        CREATE TABLE IF NOT EXISTS contact_deliveries (
+          request_id TEXT PRIMARY KEY, recipient_incident TEXT NOT NULL, body TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'prepared');
         ''')
 
 
@@ -71,38 +74,70 @@ def consent(ident, token, accept):
     return {'state':state}
 
 
-def _create(incident, contact_id, fallback_id, message, key, parent_id=None):
-    """Commit before provider I/O. Indeterminate sends are never retried blindly."""
+def _prepare(c, incident, contact_id, fallback_id, message, key, parent_id=None):
+    """Prepare request and delivery in caller transaction, including fallback decisions."""
+    existing = c.execute('SELECT id,state,delivery_state FROM contact_requests WHERE incident=? AND idempotency_key=?',(incident,key)).fetchone()
+    if existing:
+        return dict(existing)
+    contact = c.execute("SELECT * FROM trusted_contacts WHERE id=? AND owner_incident=? AND consent='enrolled'",(contact_id,incident)).fetchone()
+    if not contact:
+        raise HTTPException(409,'Contact has not consented for this incident')
+    if fallback_id:
+        fallback = c.execute("SELECT id FROM trusted_contacts WHERE id=? AND owner_incident=? AND consent='enrolled'",(fallback_id,incident)).fetchone()
+        if not fallback or fallback_id == contact_id:
+            raise HTTPException(409,'Fallback must be a separate enrolled participant')
     ident, token = str(uuid.uuid4()), secrets.token_urlsafe(32)
+    expires = time.time()+3600
+    c.execute('INSERT INTO contact_requests VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        (ident,incident,contact_id,fallback_id,'pending',message,digest(token),expires,0,parent_id,'prepared',time.time(),key))
+    recipient_incident = 'contact-'+contact_id
+    c.execute('INSERT OR IGNORE INTO incidents VALUES(?,?,?,?,?)',(recipient_incident,contact['phone'],'trusted_contact',time.time(),time.time()))
+    body = ('RELAY trusted-contact request: '+message[:400]+f'\nRespond: {public()}/contacts/requests/{ident}?token={token}\nAcknowledgement means receipt only. No emergency dispatch.')
+    c.execute('INSERT INTO contact_deliveries VALUES(?,?,?,?)',(ident,recipient_incident,body,'prepared'))
+    return {'id':ident,'state':'pending','delivery_state':'prepared','response_token':token,'expires_at':expires}
+
+
+def _dispatch(ident):
+    """Claim once; only unsent prepared deliveries can recover after a restart.
+
+    A process lost after claiming is indeterminate and must never be retried blindly.
+    Consent and request expiry are checked immediately before claiming delivery.
+    """
     with store.connect() as c:
         c.execute('BEGIN IMMEDIATE')
-        existing = c.execute('SELECT id,state,delivery_state FROM contact_requests WHERE incident=? AND idempotency_key=?',(incident,key)).fetchone()
-        if existing:
+        row=c.execute('SELECT d.*,r.incident,r.token_expires,t.consent FROM contact_deliveries d JOIN contact_requests r ON r.id=d.request_id JOIN trusted_contacts t ON t.id=r.contact_id WHERE d.request_id=?',(ident,)).fetchone()
+        if not row or row['state'] != 'prepared':
+            current=c.execute('SELECT delivery_state FROM contact_requests WHERE id=?',(ident,)).fetchone()
             c.execute('COMMIT')
-            return dict(existing)
-        contact = c.execute('SELECT * FROM trusted_contacts WHERE id=? AND owner_incident=? AND consent=\'enrolled\'',(contact_id,incident)).fetchone()
-        if not contact:
-            raise HTTPException(409,'Contact has not consented for this incident')
-        if fallback_id:
-            fallback = c.execute('SELECT * FROM trusted_contacts WHERE id=? AND owner_incident=? AND consent=\'enrolled\'',(fallback_id,incident)).fetchone()
-            if not fallback or fallback_id == contact_id:
-                raise HTTPException(409,'Fallback must be a separate enrolled participant')
-        c.execute('INSERT INTO contact_requests VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
-            (ident,incident,contact_id,fallback_id,'pending',message,digest(token),time.time()+3600,0,parent_id,'sending',time.time(),key))
+            return current['delivery_state'] if current else 'unknown'
+        if row['consent'] != 'enrolled' or row['token_expires'] < time.time():
+            c.execute("UPDATE contact_deliveries SET state='not_authorized' WHERE request_id=?",(ident,))
+            c.execute("UPDATE contact_requests SET delivery_state='not_authorized' WHERE id=?",(ident,))
+            c.execute('COMMIT')
+            return 'not_authorized'
+        c.execute("UPDATE contact_deliveries SET state='sending' WHERE request_id=?",(ident,))
+        c.execute("UPDATE contact_requests SET delivery_state='sending' WHERE id=?",(ident,))
         c.execute('COMMIT')
-    recipient_incident = 'contact-'+contact_id
-    store.upsert_incident(recipient_incident,phone=contact['phone'],channel='trusted_contact')
-    # The token is a bearer secret scoped to one request and expires in an hour.
-    body = ('RELAY trusted-contact request: '+message[:400]+f'\nRespond: {public()}/contacts/requests/{ident}?token={token}\nAcknowledgement means receipt only. No emergency dispatch.')
     try:
-        delivery = providers.send_reference(recipient_incident,body,explicit_consent=True)
-        delivery_state = delivery.get('state','unknown')
+        delivery_state=providers.send_reference(row['recipient_incident'],row['body'],explicit_consent=True).get('state','unknown')
     except Exception:
-        delivery_state = 'unknown'
+        delivery_state='unknown'
     with store.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
         c.execute('UPDATE contact_requests SET delivery_state=? WHERE id=?',(delivery_state,ident))
-    store.add_event(incident,'trusted_contact_requested',{'request_id':ident,'delivery_state':delivery_state})
-    return {'id':ident,'state':'pending','delivery_state':delivery_state,'response_token':token,'expires_at':time.time()+3600}
+        c.execute('UPDATE contact_deliveries SET state=? WHERE request_id=?',(delivery_state,ident))
+        c.execute('COMMIT')
+    store.add_event(row['incident'],'trusted_contact_requested',{'request_id':ident,'delivery_state':delivery_state})
+    return delivery_state
+
+
+def _create(incident, contact_id, fallback_id, message, key, parent_id=None):
+    with store.connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        result=_prepare(c,incident,contact_id,fallback_id,message,key,parent_id)
+        c.execute('COMMIT')
+    result['delivery_state']=_dispatch(result['id'])
+    return result
 
 
 def request_help(incident,contact_id,fallback_id,message,key,approved):
@@ -116,34 +151,39 @@ def request_help(incident,contact_id,fallback_id,message,key,approved):
 def respond(ident,token,decision):
     if decision not in ('acknowledged','declined','assisted'):
         raise HTTPException(422,'Invalid decision')
+    delivery=None
+    triggered=False
     with store.connect() as c:
         c.execute('BEGIN IMMEDIATE')
-        row = c.execute('SELECT * FROM contact_requests WHERE id=?',(ident,)).fetchone()
+        row=c.execute('SELECT * FROM contact_requests WHERE id=?',(ident,)).fetchone()
         if not row or row['token_expires'] < time.time() or not secrets.compare_digest(row['token_hash'],digest(token)):
             raise HTTPException(403,'Invalid or expired response token')
-        contact = c.execute('SELECT consent FROM trusted_contacts WHERE id=?',(row['contact_id'],)).fetchone()
+        contact=c.execute('SELECT consent FROM trusted_contacts WHERE id=?',(row['contact_id'],)).fetchone()
         if not contact or contact['consent'] != 'enrolled':
             raise HTTPException(403,'Participant consent revoked')
-        state = row['state']
-        if state == decision:
-            c.execute('COMMIT')
-            return {'state':state,'fallback_triggered':False}
-        allowed = state == 'pending' and decision in ('acknowledged','declined') or state == 'acknowledged' and decision == 'assisted'
-        if not allowed:
-            raise HTTPException(409,'Invalid response transition; acknowledge before marking assistance complete')
-        fallback = decision == 'declined' and row['fallback_id'] and not row['fallback_used']
-        c.execute('UPDATE contact_requests SET state=?,fallback_used=? WHERE id=?',(decision,1 if fallback else row['fallback_used'],ident))
+        state=row['state']
+        if state != decision:
+            allowed=state == 'pending' and decision in ('acknowledged','declined') or state == 'acknowledged' and decision == 'assisted'
+            if not allowed:
+                raise HTTPException(409,'Invalid response transition; acknowledge before marking assistance complete')
+            triggered=bool(decision == 'declined' and row['fallback_id'] and not row['fallback_used'])
+            if triggered:
+                try:
+                    delivery=_prepare(c,row['incident'],row['fallback_id'],None,row['message'],'fallback-'+ident,parent_id=ident)
+                except HTTPException:
+                    delivery={'state':'blocked','delivery_state':'not_authorized'}
+            c.execute('UPDATE contact_requests SET state=?,fallback_used=? WHERE id=?',(decision,1 if triggered else row['fallback_used'],ident))
+        elif decision == 'declined':
+            # Recover a durable prepared fallback after death before dispatch.
+            child=c.execute('SELECT id,state,delivery_state FROM contact_requests WHERE parent_id=?',(ident,)).fetchone()
+            delivery=dict(child) if child else None
         c.execute('COMMIT')
-    delivery = None
-    if fallback:
-        try:
-            delivery = _create(row['incident'],row['fallback_id'],None,row['message'],'fallback-'+ident,parent_id=ident)
-            # Never expose another participant's bearer capability to the declining contact.
-            delivery = {k:v for k,v in delivery.items() if k not in ('response_token','expires_at')}
-        except HTTPException:
-            delivery = {'state':'blocked','delivery_state':'not_authorized'}
+    if delivery and delivery.get('id'):
+        delivery['delivery_state']=_dispatch(delivery['id'])
+        # A declining participant never receives another participant's capability.
+        delivery={k:v for k,v in delivery.items() if k not in ('response_token','expires_at')}
     store.add_event(row['incident'],'trusted_contact_response',{'request_id':ident,'decision':decision,'fallback':delivery})
-    return {'state':decision,'fallback_triggered':bool(fallback),'fallback':delivery,'notice':'Acknowledgement is receipt only; assistance is separately reported by the participant.'}
+    return {'state':decision,'fallback_triggered':triggered,'fallback':delivery,'notice':'Acknowledgement is receipt only; assistance is separately reported by the participant.'}
 
 
 class Enrollment(BaseModel):
@@ -191,6 +231,15 @@ def install_coordination(app):
     def request_route(incident:str,body:HelpRequest,request:Request):
         require_admin(request)
         return request_help(incident,body.contact_id,body.fallback_id,body.message,body.idempotency_key,body.approved)
+
+    @app.post('/demo/incidents/{incident}/contact-requests/{ident}/resume')
+    def resume_route(incident:str,ident:str,request:Request):
+        require_admin(request)
+        with store.connect() as c:
+            exists=c.execute('SELECT id FROM contact_requests WHERE id=? AND incident=?',(ident,incident)).fetchone()
+        if not exists:
+            raise HTTPException(404,'Contact request not found')
+        return {'id':ident,'delivery_state':_dispatch(ident),'notice':'Only prepared requests can resume; acceptance-uncertain sends are never retried automatically.'}
 
     @app.get('/demo/incidents/{incident}/contacts')
     def list_route(incident:str,request:Request):
