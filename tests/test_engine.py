@@ -73,3 +73,8 @@ def test_usgs_empty_204_has_no_invented_source_timestamp():
     assert result.state=='available' and result.alerts==[]
     assert result.source_updated_at is None
     assert 'no source timestamp' in result.notice
+
+
+def test_future_nws_metadata_not_treated_as_fresh():
+    result=adapter({'updated':(datetime.now(timezone.utc)+timedelta(days=1)).isoformat(),'features':[]}).weather(LOCATION)
+    assert result.state=='stale'

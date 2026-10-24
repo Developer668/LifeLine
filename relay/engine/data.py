@@ -92,7 +92,7 @@ class OfficialData:
                     source_url=source_url(p.get('@id') or feature.get('id'), 'weather.gov'), source_time=sent, expires_at=end,
                     area=str(p.get('areaDesc',''))[:300], stale=bool(end and end <= fetched) or sent > fetched + timedelta(minutes=5), details=str(p.get('instruction') or '')[:700]))
             updated = stamp(data['updated']) if data.get('updated') else None
-            stale = any(a.stale for a in alerts) or bool(updated and fetched-updated > timedelta(minutes=15))
+            stale = any(a.stale for a in alerts) or bool(updated and (fetched-updated > timedelta(minutes=15) or updated > fetched+timedelta(minutes=5)))
             return DataResult(source='nws', state='stale' if stale else 'available', location=location, alerts=alerts, source_updated_at=updated,
                 notice='NWS active alerts at the requested point. An empty result does not establish safety or absence of local evacuation orders. ZIP centroids may not match your position.')
         except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError, OverflowError):
@@ -111,8 +111,8 @@ class OfficialData:
                 occurred = stamp(p['time'])
                 alerts.append(Alert(title=str(p.get('title') or 'Earthquake')[:300], severity=str(p.get('alert') or 'Not assigned; magnitude ' + str(p.get('mag'))),
                     source_url=source_url(p.get('url'),'earthquake.usgs.gov'), source_time=occurred,
-                    area=str(p.get('place',''))[:300], stale=occurred < fetched-timedelta(days=1), details='Magnitude is not a measure of safety at your location.'))
-            stale = fetched-generated > timedelta(minutes=15) or generated > fetched+timedelta(minutes=5)
+                    area=str(p.get('place',''))[:300], stale=occurred < fetched-timedelta(days=1) or occurred > fetched+timedelta(minutes=5), details='Magnitude is not a measure of safety at your location.'))
+            stale = fetched-generated > timedelta(minutes=15) or generated > fetched+timedelta(minutes=5) or any(a.stale for a in alerts)
             return DataResult(source='usgs',state='stale' if stale else 'available',source_updated_at=generated, location=location,alerts=alerts,
                 notice='USGS reported events in the past 24 hours within 100 km of the requested point. Events may be revised; no result does not establish safety or predict future earthquakes.')
         except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError, OverflowError):
