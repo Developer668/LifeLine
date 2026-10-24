@@ -1,5 +1,6 @@
 """Bounded OpenAI-compatible MiniCPM adapter; never substitutes simulation implicitly."""
 import base64
+import json
 from dataclasses import dataclass
 import os
 import time
@@ -102,12 +103,25 @@ class ModelAdapter:
                 "max_tokens": 180, "temperature": 0.1,
                 "chat_template_kwargs": {"enable_thinking": False, "use_tts_template": with_audio}}
         caller = self.client or httpx
+        # A read timeout alone resets for each chunk. Enforce a shared wall budget
+        # across both attempts, allowing at most one 18-second read to overrun it.
+        deadline = time.monotonic() + 36
         for attempt in range(2):
             try:
-                response = caller.post(self.base + '/v1/chat/completions', headers=self.headers, json=body,
-                                       timeout=httpx.Timeout(18, connect=4))
-                response.raise_for_status()
-                return parse_response(response.json(), require_audio=with_audio)
+                if time.monotonic() >= deadline:
+                    raise httpx.ReadTimeout('Inference wall budget exhausted')
+                with caller.stream('POST', self.base + '/v1/chat/completions', headers=self.headers, json=body,
+                                   timeout=httpx.Timeout(18, connect=4, write=6, pool=4)) as response:
+                    response.raise_for_status()
+                    chunks, length = [], 0
+                    for chunk in response.iter_bytes():
+                        if time.monotonic() >= deadline:
+                            raise httpx.ReadTimeout('Inference wall budget exhausted')
+                        length += len(chunk)
+                        if length > 18_000_000:
+                            raise ValueError('Model response exceeded size budget')
+                        chunks.append(chunk)
+                    return parse_response(json.loads(b''.join(chunks)), require_audio=with_audio)
             except (httpx.TimeoutException, httpx.NetworkError):
                 if attempt:
                     raise

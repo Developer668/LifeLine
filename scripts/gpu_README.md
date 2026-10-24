@@ -23,7 +23,7 @@ python scripts/benchmark_gpu.py --requests 12 --output artifacts/gpu-text.json
 python scripts/benchmark_gpu.py --requests 12 --audio --output artifacts/gpu-audio.json
 ```
 
-Set `RELAY_API_URL` to the public HTTPS gateway and `RELAY_WORKER_TOKEN` to its separate worker token. The worker requires the `httpx` package and local `relay` sources; it does not need FastAPI or Twilio installed on the GPU. Start from the project root:
+Set `RELAY_API_URL` to the public HTTPS gateway and `RELAY_WORKER_TOKEN` to its separate worker token. The worker requires `httpx`, Pydantic 2, and local `relay` sources; setup installs these plus `python-dotenv` for the `python -m relay worker` wrapper. It does not need FastAPI or Twilio installed on the GPU. Start from the project root:
 
 ```sh
 python -m relay.worker --check

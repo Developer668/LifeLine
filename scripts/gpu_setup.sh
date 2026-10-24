@@ -18,7 +18,7 @@ if [[ ! -d "$RELAY_GPU_DIR/vllm-omni/.git" ]]; then
   git clone https://github.com/vllm-project/vllm-omni.git "$RELAY_GPU_DIR/vllm-omni"
 fi
 git -C "$RELAY_GPU_DIR/vllm-omni" checkout "$OMNI_REV"
-uv pip install -e "$RELAY_GPU_DIR/vllm-omni" stepaudio2-minicpmo httpx
+uv pip install -e "$RELAY_GPU_DIR/vllm-omni" stepaudio2-minicpmo httpx 'pydantic>=2' python-dotenv
 # Do not install Omni's [dev] extra: it supplies a conflicting Step-Audio distribution.
 python -c 'import torch, vllm_omni; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))'
 uv pip freeze > "$RELAY_GPU_DIR/installed-requirements.txt"

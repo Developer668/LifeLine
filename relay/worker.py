@@ -62,31 +62,34 @@ def process(client, job):
     return outcome
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true', help='Probe model health and listing, then perform text inference')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.check:
         adapter = ModelAdapter()
         print(json.dumps(adapter.probe()))
         result = adapter.generate({'text': 'Introduce RELAY in one sentence.'})
         print(json.dumps({'inference_ok': bool(result.text), 'simulated': result.simulated}))
         return
-    if not TOKEN:
+    token = os.getenv('RELAY_WORKER_TOKEN', '')
+    api = os.getenv('RELAY_API_URL', 'http://127.0.0.1:8000').rstrip('/')
+    concurrency = max(1, min(4, int(os.getenv('RELAY_WORKER_CONCURRENCY', '2'))))
+    if not token:
         raise SystemExit('Set RELAY_WORKER_TOKEN first')
     if not os.getenv('MODEL_BASE_URL') and os.getenv('RELAY_ALLOW_SIMULATION', 'false').lower() != 'true':
         raise SystemExit('Configure MODEL_BASE_URL or explicitly enable RELAY_ALLOW_SIMULATION=true')
     stopping = threading.Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, lambda *_: stopping.set())
-    with httpx.Client(base_url=API, headers={'Authorization': 'Bearer ' + TOKEN}, timeout=10) as client:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+    with httpx.Client(base_url=api, headers={'Authorization': 'Bearer ' + token}, timeout=10) as client:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
             running = set()
-            print(json.dumps({'event': 'worker_started', 'max_in_flight': MAX_WORKERS,
+            print(json.dumps({'event': 'worker_started', 'max_in_flight': concurrency,
                 'mode': 'model_endpoint' if os.getenv('MODEL_BASE_URL') else 'SIMULATION'}), flush=True)
             while not stopping.is_set():
                 running = {f for f in running if not f.done()}
-                if len(running) >= MAX_WORKERS:
+                if len(running) >= concurrency:
                     stopping.wait(.15)
                     continue
                 try:
