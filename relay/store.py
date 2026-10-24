@@ -137,7 +137,14 @@ def claim():
         c.execute("COMMIT")
         payload = json.loads(row["payload"])
         payload['history'] = history(row['incident'], before=row['created'])
-        return dict(row) | {"lease": lease, "payload": payload}
+        from .contracts import IncidentEvent
+        channel = payload.get('channel', 'demo')
+        channel = channel if channel in ('voice','sms','camera','demo') else 'demo'
+        event = IncidentEvent(event_id=str(payload.get('event_id', row['id'])),
+            incident_id=row['incident'], session_id=row['incident'], channel=channel,
+            type='observation' if channel == 'camera' else 'user_message',
+            payload={'text': str(payload.get('text', ''))[:2000]}).model_dump()
+        return dict(row) | {"lease": lease, "payload": payload, "event": event}
 
 
 def finish(job_id, lease, result=None, error=None):

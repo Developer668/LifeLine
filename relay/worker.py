@@ -16,7 +16,7 @@ MAX_WORKERS = max(1, min(4, int(os.getenv('RELAY_WORKER_CONCURRENCY', '2'))))
 
 
 def infer(payload):
-    return ModelAdapter().generate(payload).text
+    return ModelAdapter().propose(payload).spoken_response
 
 
 def fetch_official_context(text):
@@ -28,16 +28,31 @@ LOCATION = re.compile(r'(?<![\d.])(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)(?![\d.
 
 
 def context_query(payload):
+    from .engine import plan
     text = str(payload.get('text', ''))[:2000]
-    if LOCATION.search(text):
-        return text
-    # History is supplied by the gateway only for this authorized incident.
-    # Reuse only an explicit user location, never assistant-generated geography.
-    for item in reversed(payload.get('history', [])[-8:]):
-        if isinstance(item, dict) and item.get('role') == 'user' and isinstance(item.get('content'), str):
-            matches = list(LOCATION.finditer(item['content'][:1000]))
+    history = [item['content'][:1000] for item in payload.get('history', [])[-8:]
+               if isinstance(item, dict) and item.get('role') == 'user' and isinstance(item.get('content'), str)]
+    current_location = LOCATION.search(text)
+    location = current_location.group(0) if current_location else None
+    prior_intent = None
+    for previous in reversed(history):
+        if location is None:
+            matches = list(LOCATION.finditer(previous))
             if matches:
-                return text + '\nPreviously supplied location: ' + matches[-1].group(0)
+                location = matches[-1].group(0)
+        action = plan(previous).next_action
+        if prior_intent is None and action in ('get_weather_alerts', 'get_earthquakes'):
+            prior_intent = action
+    current_intent = plan(text).next_action
+    # A bare location or explicit follow-up continues the last verified lookup.
+    # Unrelated requests never silently inherit an emergency-data intent.
+    stripped = LOCATION.sub('', text).strip(' ,.?')
+    followup = bool(current_location and not stripped) or bool(re.fullmatch(
+        r'(?:any |an? )?(?:updates?|now|again|what about (?:there|now)|check again|and now|how about now)[?.! ]*', text.strip(), re.I))
+    if current_intent == 'respond' and prior_intent and followup:
+        text += '\nRequested official lookup: ' + ('weather alerts' if prior_intent == 'get_weather_alerts' else 'earthquakes')
+    if not current_location and location:
+        text += '\nPreviously supplied location: ' + location
     return text
 
 

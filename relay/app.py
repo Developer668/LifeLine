@@ -63,7 +63,8 @@ def call_incident(form):
     if not re.fullmatch(r"CA[a-fA-F0-9]{32}", sid):
         raise HTTPException(422, "Invalid CallSid")
     ident = "call-" + sid
-    store.upsert_incident(ident, form.get("From"), "voice")
+    phone = form.get("To") if str(form.get("Direction", "")).startswith("outbound") else form.get("From")
+    store.upsert_incident(ident, phone, "voice")
     return ident
 
 
@@ -276,13 +277,13 @@ async def voice_poll(request: Request, incident: str, job_id: str, attempt: int 
         return next_prompt(current["result"] or "I cannot verify that yet.")
     if current and current["state"] == "failed":
         return next_prompt("The information service is temporarily unavailable. I cannot verify an answer.")
-    if attempt >= 12:
+    if attempt >= 3:
         v = VoiceResponse()
         v.say("I am unable to verify that quickly. Please call local emergency services if there is immediate danger. Goodbye.")
         v.hangup()
         return xml(v)
     v = VoiceResponse()
-    v.pause(length=3)
+    v.pause(length=10)
     v.redirect(PUBLIC()+f"/twilio/voice/poll?incident={incident}&job_id={job_id}&attempt={attempt+1}", method="POST")
     return xml(v)
 

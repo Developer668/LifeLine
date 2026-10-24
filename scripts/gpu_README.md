@@ -1,6 +1,6 @@
 # MoLab inference handoff
 
-Status: GPU execution is **not verified**. No active MoLab session or GPU endpoint was available during this build. The old NeuroLoop source refers to notebook `nb_hmqbzUN6NR96sCQ55RKPXb`; it does not supply an active worker connection. No local GPU inference was attempted.
+Status: A live MoLab session was connected and its RTX PRO6000 Blackwell Server Edition (97887MiB) hardware verified. MiniCPM weights and the pinned stack are installed; runtime startup and inference verification are being completed. No local Mac GPU inference was used. See docs/VERIFICATION.md for final measured status.
 
 ## Reproducible session setup
 
@@ -42,6 +42,10 @@ Reviewed on 2026-10-24:
 - [Official MiniCPM-o 4.5 recipe](https://github.com/vllm-project/vllm-omni/blob/7f90d24d76705c8ee901a5d049a285fcbcbaa816/recipes/OpenBMB/MiniCPM-o-4_5.md)
 - [Official CUDA installation instructions](https://github.com/vllm-project/vllm-omni/blob/7f90d24d76705c8ee901a5d049a285fcbcbaa816/docs/getting_started/installation/gpu/cuda.inc.md)
 
-Setup pins the reviewed Omni revision and the vLLM wheel recommended by that revision. The recipe specifies the MiniCPM vocoder distribution; the development extras specify an incompatible Step-Audio distribution, so this setup excludes those extras. Initial text validation precedes image and audio validation. Actual compatibility on the allocated host still requires the smoke tests above.
+Setup pins the reviewed Omni revision and the vLLM wheel recommended by that revision. CUDA compiler/CRT/NVVM packages are pinned to 13.0.88 after a real MoLab startup exposed unconstrained dependency resolution choosing compiler13.4 against torch CUDA13.0 headers; FlashInfer correctly rejected that mismatch. The recipe specifies the MiniCPM vocoder distribution; the development extras specify an incompatible Step-Audio distribution, so this setup excludes those extras. Initial text validation precedes image and audio validation. Actual compatibility on the allocated host still requires the smoke tests above.
 
 The adapter requests text-only output initially, disables thinking, places images before their questions, and finds audio in whichever choice contains it. Retryable inference failures have a two-attempt bound. Completion retries resend the same result; a lost acknowledgement never causes a contradictory failure outcome. Reports contain measured request timings and error counts, not advertised capacities. Hardware is only marked observed when `nvidia-smi` succeeds on the benchmark host.
+
+## Live host repairs
+
+The hosted notebook inherits global NVIDIA packages. Explicitly set CUDA_HOME/CUDACXX/PATH to the matching environment compiler so FlashInfer does not accidentally choose the host's newer nvcc with CUDA13.0 runtime headers. The NVIDIA pip runtime uses lib/libcudart.so.13; the serving script supplies the lib64 and unversioned linker names expected by JIT builds. Compiler mismatch and missing -lcudart errors were observed and repaired during startup. Keep these repairs distinct from a successful inference result.

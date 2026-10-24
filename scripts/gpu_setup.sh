@@ -19,6 +19,9 @@ if [[ ! -d "$RELAY_GPU_DIR/vllm-omni/.git" ]]; then
 fi
 git -C "$RELAY_GPU_DIR/vllm-omni" checkout "$OMNI_REV"
 uv pip install -e "$RELAY_GPU_DIR/vllm-omni" stepaudio2-minicpmo httpx 'pydantic>=2' python-dotenv
+# Pin compiler tools to CUDA13.0: unconstrained resolution can choose13.4 while
+# torch ships13.0 runtime headers, causing FlashInfer compilation failures.
+uv pip install nvidia-cuda-nvcc==13.0.88 nvidia-cuda-crt==13.0.88 nvidia-nvvm==13.0.88
 # Do not install Omni's [dev] extra: it supplies a conflicting Step-Audio distribution.
 python -c 'import torch, vllm_omni; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))'
 uv pip freeze > "$RELAY_GPU_DIR/installed-requirements.txt"

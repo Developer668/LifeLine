@@ -24,7 +24,7 @@ class ModelResult:
     simulated: bool = False
 
 
-def parse_response(data, require_audio=False):
+def parse_response(data, require_audio=False, text_limit=1800):
     """Omni emits text and WAV in independent choices, in no guaranteed order."""
     texts, audio = [], None
     for choice in data.get("choices", []):
@@ -46,7 +46,7 @@ def parse_response(data, require_audio=False):
         raise ValueError("Model returned no text")
     if require_audio and not audio:
         raise ValueError("Model returned no audio")
-    return ModelResult(text="\n".join(texts)[:1800], audio=audio)
+    return ModelResult(text="\n".join(texts)[:text_limit], audio=audio)
 
 
 class ModelAdapter:
@@ -77,7 +77,7 @@ class ModelAdapter:
         return {"ready": True, "mode": "model_endpoint", "model": self.name,
                 "gpu_verified": False, "notice": "HTTP readiness alone does not establish GPU hardware or inference."}
 
-    def generate(self, payload, with_audio=False):
+    def generate(self, payload, with_audio=False, structured=False):
         if not self.base:
             if os.getenv("RELAY_ALLOW_SIMULATION", "false").lower() != "true":
                 raise RuntimeError("MODEL_BASE_URL is required; simulation is disabled")
@@ -102,6 +102,14 @@ class ModelAdapter:
         body = {"model": self.name, "messages": messages, "modalities": ['text', 'audio'] if with_audio else ['text'],
                 "max_tokens": 180, "temperature": 0.1,
                 "chat_template_kwargs": {"enable_thinking": False, "use_tts_template": with_audio}}
+        if structured:
+            from .contracts import ActionPlan
+            messages[0]['content'] += (' Return only a JSON object matching the supplied schema. '
+                'spoken_response must answer using the verified context. next_action is a proposal only. '
+                'Reference messages always require consent. Camera/contact proposals require confirmation.')
+            body['response_format'] = {'type': 'json_schema', 'json_schema': {
+                'name': 'relay_action', 'strict': True, 'schema': ActionPlan.model_json_schema()}}
+            body['max_tokens'] = 360
         caller = self.client or httpx
         # A read timeout alone resets for each chunk. Enforce a shared wall budget
         # across both attempts, allowing at most one 18-second read to overrun it.
@@ -121,7 +129,7 @@ class ModelAdapter:
                         if length > 18_000_000:
                             raise ValueError('Model response exceeded size budget')
                         chunks.append(chunk)
-                    return parse_response(json.loads(b''.join(chunks)), require_audio=with_audio)
+                    return parse_response(json.loads(b''.join(chunks)), require_audio=with_audio, text_limit=12000 if structured else 1800)
             except (httpx.TimeoutException, httpx.NetworkError):
                 if attempt:
                     raise
@@ -130,3 +138,21 @@ class ModelAdapter:
                     raise
             time.sleep(.3)
         raise RuntimeError('Inference unavailable')
+
+
+    def propose(self, payload):
+        """Parse the model proposal before any wording reaches carrier orchestration."""
+        from .contracts import ActionPlan
+        result = self.generate(payload, structured=True)
+        if result.simulated:
+            return ActionPlan(spoken_response=result.text)
+        proposal = ActionPlan.model_validate_json(result.text)
+        # Proposed sensitive actions can only request confirmation. They never send.
+        if proposal.next_action in ('request_camera', 'contact_trusted') and not proposal.requires_user_confirmation:
+            raise ValueError('Sensitive action requires confirmation')
+        if proposal.reference_message.required and not proposal.reference_message.requires_consent:
+            raise ValueError('Reference messages require consent')
+        import re
+        if re.search(r"\b(?:I(?:'ve| have)? (?:sent|texted|called|dispatched)|help is on (?:its|the) way|rescue is coming|you are safe)\b", proposal.spoken_response, re.I):
+            raise ValueError('Unverified delivery or safety claim')
+        return proposal

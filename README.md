@@ -35,7 +35,9 @@ TWILIO_NUMBER=your_twilio_number
 TWILIO_LIVE_SEND=false
 ```
 
-In your Twilio number configuration:
+For the current shared-number trial flow, read [the account-specific trial findings](docs/TWILIO_TRIAL.md). Shared trial sources do not appear as owned incoming numbers; the Console trial Custom scenario is a separate configuration path. The account may reject REST number provisioning even after mobile verification.
+
+For a number you own, configure:
 
 | Purpose | POST webhook |
 | --- | --- |

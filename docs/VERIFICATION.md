@@ -5,7 +5,7 @@ Build workspace: LifeLine, bootstrapped from the existing sibling RELAY starter.
 ## Completed local and public checks
 
 - `uv sync --group dev`: reproducible lockfile/environment installation succeeded.
-- `uv run pytest -q`: **78 passed**, no failed tests; one upstream FastAPI/Starlette TestClient deprecation warning. Includes baseline, official data, model parsing/failure bounds, signed phone contracts, secure linking/history, incident isolation, camera validation/revocation, contact consent/fallback, durable outbox and SMS crash recovery.
+- `uv run pytest -q`: **87 passed**, no failed tests; one upstream FastAPI/Starlette TestClient deprecation warning. Includes baseline, official data, model parsing/failure bounds, signed phone contracts, secure linking/history, incident isolation, camera validation/revocation, contact consent/fallback, durable outbox and SMS crash recovery.
 - `uv run python -m compileall -q relay scripts`: passed.
 - Camera browser JavaScript `node --check`: passed.
 - Public HTTPS `/health`:200; unauthenticated worker claim and private incident access:401. Tunnel encrypted connection established through Cloudflare. Temporary development gateway, no uptime guarantee.
@@ -29,7 +29,7 @@ Machine load and repeated runs vary. Reproduce and inspect local `reports/load.j
 ## Live integration gates still being evaluated
 
 - MoLab confirms RTX PRO6000 Blackwell Server Edition,97887MiB GPU memory, driver595.71.05. Package stack and MiniCPM weights installed; actual pipeline initialization underway. Hardware observation alone does not verify inference.
-- Twilio account credentials supplied and API connectivity being checked. No actual phone call/SMS or provider delivery asserted yet.
+- Twilio credentials verified: account active/Trial. API provisioning returned21404; a shared trial Voice number and recipient were subsequently supplied. One45-second real call is authorized and pending real GPU readiness. No actual phone call/SMS or provider delivery asserted yet. See TWILIO_TRIAL.md.
 - Physical iPhone Safari and Android Chrome camera permissions/capture remain unverified. API capability and image validation tests passed; mobile HTML uses playsinline, environment-facing camera, explicit start, per-frame submission, visibility pause and stop/expiry.
 - Model-generated audio playback over Twilio is not enabled. Default spoken output is Twilio Say.
 

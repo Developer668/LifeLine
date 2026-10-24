@@ -151,3 +151,10 @@ def test_concurrent_voice_reservation_does_not_repeat_send(env):
     response=signed(env,'/twilio/voice/turn?turn=reserved',form)
     assert response.status_code==503
     assert store.incident_info(incident)['outbox']==[]
+
+
+def test_outbound_trial_call_associates_recipient_not_service_number(env):
+    from relay.app import call_incident
+    form={'CallSid':'CA'+'b'*32,'From':'+15555550000','To':'+15555550100','Direction':'outbound-api'}
+    incident=call_incident(form)
+    assert store.phone_for(incident)==form['To']

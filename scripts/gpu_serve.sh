@@ -2,6 +2,14 @@
 set -euo pipefail
 RELAY_GPU_DIR="${RELAY_GPU_DIR:-$PWD/relay-gpu}"
 source "$RELAY_GPU_DIR/.venv/bin/activate"
+# Prefer the matching compiler/runtime installed in this environment, not host tools.
+RELAY_CUDA_ROOT="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"]+"/nvidia/cu13")')"
+if [[ -x "$RELAY_CUDA_ROOT/bin/nvcc" ]]; then
+  export CUDA_HOME="$RELAY_CUDA_ROOT"
+  export CUDACXX="$RELAY_CUDA_ROOT/bin/nvcc"
+  export PATH="$RELAY_CUDA_ROOT/bin:$PATH"
+  python -c 'import os,pathlib; p=pathlib.Path(os.environ["CUDA_HOME"]); a=p/"lib64"; b=p/"lib/libcudart.so"; a.exists() or a.symlink_to("lib", target_is_directory=True); b.exists() or b.symlink_to("libcudart.so.13")'
+fi
 cd "$RELAY_GPU_DIR/vllm-omni"
 # Model remains loopback-only. Worker reaches this locally and polls gateway outbound.
 exec vllm serve openbmb/MiniCPM-o-4_5 --omni --trust-remote-code \

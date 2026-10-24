@@ -66,3 +66,14 @@ def test_background_dispatch_recovers_prepared_reply(monkeypatch):
             if store.incident_info('recovered')['outbox'][0]['state']=='simulated':break
             time.sleep(.05)
         else:raise AssertionError('Background outbox did not recover prepared message')
+
+
+def test_claim_exposes_validated_common_incident_event():
+    from relay.contracts import IncidentEvent
+    store.upsert_incident('event_drill',channel='demo')
+    store.enqueue('event_drill','message',{'text':'fictional event','channel':'demo'})
+    job=store.claim()
+    event=IncidentEvent.model_validate(job['event'])
+    assert event.incident_id==event.session_id=='event_drill'
+    assert event.event_id==job['id']
+    assert event.payload=={'text':'fictional event'}
