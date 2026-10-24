@@ -121,3 +121,12 @@ def test_followup_uses_only_prior_user_location():
     assert worker.context_query({**payload, 'text': 'Check earthquake near 94103'}).endswith('94103')
     assert worker.context_query({'text': 'earthquake?', 'history': [{'role': 'assistant', 'content': '92037'}]}) == 'earthquake?'
     assert worker.context_query({'text': 'alerts?', 'history': [{'role': 'user', 'content': '32.8,-117.2'}]}).endswith('32.8,-117.2')
+
+
+def test_wall_budget_rejects_slow_chunked_model_response(monkeypatch):
+    ticks = iter([0, 1, 40, 41])
+    monkeypatch.setattr('relay.model.time.monotonic', lambda: next(ticks))
+    monkeypatch.setattr('relay.model.time.sleep', lambda _: None)
+    with client_for(lambda req: httpx.Response(200, json={'choices': [{'message': {'content': 'too late'}}]})) as client:
+        with pytest.raises(httpx.ReadTimeout, match='wall budget'):
+            ModelAdapter(base='http://model', client=client).generate({'text': 'hello'})
