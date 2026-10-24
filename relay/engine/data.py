@@ -65,6 +65,8 @@ class OfficialData:
         else:
             response = httpx.get(url, headers=headers, timeout=httpx.Timeout(3, connect=2), follow_redirects=False, **kwargs)
         response.raise_for_status()
+        if response.status_code == 204:
+            return {'features': [], '_empty_response': True}
         return response.json()
 
     def locate(self, text):
@@ -99,7 +101,9 @@ class OfficialData:
     def earthquakes(self, location):
         try:
             fetched = now()
-            data = self._get('https://earthquake.usgs.gov/fdsnws/event/1/query', params={'format':'geojson','latitude':location.latitude,'longitude':location.longitude,'maxradiuskm':100,'starttime':(fetched-timedelta(days=1)).isoformat(), 'orderby':'time','limit':10,'nodata':200})
+            data = self._get('https://earthquake.usgs.gov/fdsnws/event/1/query', params={'format':'geojson','latitude':location.latitude,'longitude':location.longitude,'maxradiuskm':100,'starttime':(fetched-timedelta(days=1)).isoformat(), 'orderby':'time','limit':10,'nodata':204})
+            if data.get('_empty_response'):
+                return DataResult(source='usgs',state='available',location=location,notice='USGS returned HTTP 204: no reported events in the past 24 hours within 100 km. The response has no source timestamp. No result does not establish safety.')
             generated = stamp(data['metadata']['generated'])
             alerts = []
             for feature in data.get('features', []):

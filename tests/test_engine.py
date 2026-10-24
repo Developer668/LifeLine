@@ -64,3 +64,12 @@ def test_usgs_query_radius_and_timestamps():
 def test_bad_source_timestamp_fails_closed():
     result=adapter({'features':[{'properties':{'sent':'yesterday'}}]}).weather(LOCATION)
     assert result.state=='unavailable'
+
+def test_usgs_empty_204_has_no_invented_source_timestamp():
+    def handler(req):
+        assert req.url.params['nodata']=='204'
+        return httpx.Response(204)
+    result=OfficialData(httpx.Client(transport=httpx.MockTransport(handler))).earthquakes(LOCATION)
+    assert result.state=='available' and result.alerts==[]
+    assert result.source_updated_at is None
+    assert 'no source timestamp' in result.notice
