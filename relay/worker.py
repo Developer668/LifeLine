@@ -65,6 +65,10 @@ def run_answer(job):
     fallback = policy_response(str(payload.get('text', '')))
     if fallback:
         return fallback, None, None
+    from .persona import introduction
+    identity = introduction(str(payload.get('text', '')), payload.get('channel', 'voice'))
+    if identity:
+        return spoken(identity), None, None
     context = fetch_official_context(context_query(payload))
     answer = infer({**payload, 'context': context})
     official, reference = None, None

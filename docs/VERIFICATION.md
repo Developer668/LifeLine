@@ -4,7 +4,7 @@ LifeLine was bootstrapped from the existing sibling RELAY starter. Its nine base
 
 ## Confirmed
 
-- `uv run pytest -q`: **110 passed**, zero failures; one upstream FastAPI/Starlette TestClient deprecation warning.
+- `uv run pytest -q`: **118 passed**, zero failures; one upstream FastAPI/Starlette TestClient deprecation warning.
 - `uv run python -m compileall -q relay scripts` and `git diff --check`: passed.
 - Real MoLab hardware: NVIDIA RTX PRO6000 Blackwell Server Edition,97887MiB, driver595.71.05. No Mac GPU inference was used.
 - Real MiniCPM-o4.5 health, model listing, text completion, validated structured proposals, and image completion passed. Simulation disabled.
@@ -66,3 +66,11 @@ One previously authorized bounded carrier call was attempted via Bandwidth. HTTP
 A rate-limit regression check initially caught a missing SQLite COMMIT on failed phone-code attempts; explicit transaction completion fixed it. All current workflow tests pass. Native MiniCPM duplex audio, physical iPhone/Android camera capture and three full successful carrier demo runs remain unverified.
 
 The latest deployed two-question raw-audio/GPU check passed in 11.94 seconds with 133 outgoing audio packets and four clear events. It is explicitly synthetic carrier transport, with real ASR/TTS/GPU and no audio files. An outbound answer event without a direction field now binds the callee, with a regression test.
+
+## Relay identity and handset evidence
+
+The user reports successful calling and texting from their handset. Gateway records confirm one non-fixture Bandwidth call connection and two delivered SMS outbox items. These establish real carrier interaction; they do not establish public access from arbitrary numbers or three consecutive scripted demo runs. The previously approved outbound test target remains rejected by Bandwidth's verified-mobile trial restriction.
+
+Relay now has one explicitly AI identity across calls and SMS. The 48-word call greeting explains official alerts, approved-contact requests, why fast clear information matters, and the inability to dispatch emergency help. Short SMS greetings use two trial-size messages. HELP and explicit purpose questions explain the same role. Critical-risk messages bypass onboarding. Ordinary questions keep a direct conversational answer without repeated introductions.
+
+118 tests pass. Public worker checks returned the purpose response in 1.24 seconds and a validated real GPU answer in 2.31 seconds. No carrier call or SMS was initiated by those checks. Local evidence: reports/persona.json.

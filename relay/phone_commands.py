@@ -70,14 +70,21 @@ def handle(incident, phone, text):
     co.initialize()
     text = text.strip()
     upper = text.upper()
+    # Urgent messages must bypass onboarding and commands, including greetings
+    # combined with a report of immediate danger.
+    from .engine import policy_response
+    if policy_response(text):
+        return None
+    from .persona import introduction, SMS_INTRO
+    identity = introduction(text, 'sms')
+    if identity:
+        return identity
     if upper == 'REVOKE ALL':
         with store.connect() as c:
             c.execute("UPDATE trusted_contacts SET consent='revoked' WHERE phone=?", (phone,))
         return 'Your trusted-contact consent is revoked. No new contact request is authorized for this phone.'
     if upper == 'HELP':
-        return ('Ask a question or send a ZIP code for official alerts. Commands: CONTACTS; '
-                'ADD CONTACT Name +1number; REQUEST Name: message; STATUS. '
-                'Say "link my texts" during a call to share its context with SMS. STOP stops texts.')
+        return (SMS_INTRO + ' For alerts, include your ZIP. Text CONTACTS for contacts or STOP to stop texts.')
     if upper == 'CAMERA':
         from .media import issue_short_camera_link
         return 'Optional camera (10 min): ' + issue_short_camera_link(incident)

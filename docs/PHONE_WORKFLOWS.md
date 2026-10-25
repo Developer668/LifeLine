@@ -1,6 +1,6 @@
 # RELAY phone-only user flow
 
-Call or text the same Bandwidth number. Calls use live audio with interruptions; text answers arrive directly by SMS. No browser is required for the core flow.
+Call or text the same Bandwidth number. Calls use live audio with interruptions; text answers arrive directly by SMS. No browser is required for the core flow. Relay introduces itself as an AI emergency information assistant, explains why official information matters, and states its limits. HELLO, HELP, or “what can you do?” also explain its purpose; urgent messages bypass this introduction.
 
 | Task | What the person does | Guard |
 | --- | --- | --- |

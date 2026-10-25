@@ -133,6 +133,9 @@ class Conversation:
         try:
             from .app import emergency_response
             result = emergency_response(text)
+            if not result:
+                from .persona import introduction
+                result = introduction(text)
             if not result and re.search(r'\b(?:text|send)\b.*\bcamera\b', text, re.I):
                 phone = store.phone_for(self.incident)
                 if phone and not store.opted_out(phone):
@@ -256,8 +259,8 @@ def install_bandwidth(app):
                     await socket.close(code=1008)
                     return
                 recognizer = await asyncio.to_thread(live_audio.Recognizer)
-                conversation.task = asyncio.create_task(conversation.speak(
-                    'You are speaking with RELAY, an AI information prototype. I cannot dispatch help. What would you like to know?', conversation.generation))
+                from .persona import VOICE_GREETING
+                conversation.task = asyncio.create_task(conversation.speak(VOICE_GREETING, conversation.generation))
                 last_sequence = 0
                 total_bytes = 0
                 while True:
