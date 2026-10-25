@@ -92,7 +92,6 @@ def test_inbound_speech_clears_playback_without_wav(monkeypatch):
         assert greeting['media']['contentType'] == 'audio/pcmu'
         socket.send_json({'eventType': 'media', 'track': 'inbound', 'sequenceNumber': '1', 'payload': base64.b64encode(b'\xff' * 160).decode()})
         assert socket.receive_json() == {'eventType': 'clear'}
-        assert socket.receive_json() == {'eventType': 'clear'}
         assert socket.receive_json()['eventType'] == 'playAudio'
         socket.send_json({'eventType': 'stop'})
     assert store.claim() is None  # critical response bypasses the inference queue
@@ -114,3 +113,70 @@ async def test_interruption_prevents_obsolete_audio(monkeypatch):
     assert sent[-1] == {'eventType': 'clear'}
     await c.speak('This is obsolete.', c.generation - 1)
     assert len(sent) == count
+
+
+@pytest.mark.asyncio
+async def test_noise_does_not_cancel_cold_synthesis_but_recognized_speech_does(monkeypatch):
+    import time
+    sent=[]
+    class Socket:
+        async def send_json(self,item):sent.append(item)
+    def cold_voice(text):
+        time.sleep(.12)
+        return b'\xfe' * 8000
+    monkeypatch.setattr(live_audio,'sentence_audio',cold_voice)
+    c=bandwidth.Conversation(Socket(),'noise-drill')
+    c.task=asyncio.create_task(c.speak('A greeting that should be audible.',c.generation))
+    await asyncio.sleep(.01)
+    for _ in range(4):
+        await c.recognized({'speech_start':True,'final':False,'text':''})
+        await c.recognized({'speech_start':False,'final':False,'text':'the'})
+    await asyncio.sleep(.17)
+    assert any(e['eventType']=='playAudio' for e in sent)
+    assert not any(e['eventType']=='clear' for e in sent)
+    assert c.task and not c.task.done()
+    await asyncio.sleep(.3)
+    await c.recognized({'speech_start':False,'final':False,'text':'I need help'})
+    assert sent[-1]=={'eventType':'clear'}
+    assert c.task is None
+    count=len(sent)
+    await c.recognized({'speech_start':False,'final':False,'text':'I need help now'})
+    assert len(sent)==count  # only one interruption per partial utterance
+
+
+@pytest.mark.asyncio
+async def test_partial_recognition_does_not_cancel_inference(monkeypatch):
+    sent=[]
+    class Socket:
+        async def send_json(self,item):sent.append(item)
+    c=bandwidth.Conversation(Socket(),'thinking-drill')
+    async def pending_answer():
+        await asyncio.sleep(20)
+    c.task=asyncio.create_task(pending_answer())
+    c.phase='thinking'
+    await c.recognized({'speech_start':True,'speech_confirmed':True,'final':False,'text':'some background phrase'})
+    assert c.task and not c.task.done()
+    assert c.generation==0 and not sent
+    await c.close()
+
+
+def test_local_voice_startup_failure_is_visible_and_has_no_private_details(monkeypatch):
+    monkeypatch.setattr(live_audio,'ready',lambda:True)
+    def failed_warmup():raise RuntimeError('private model configuration must not appear publicly')
+    monkeypatch.setattr(live_audio,'warmup',failed_warmup)
+    with TestClient(app) as client:
+        response=client.get('/health').json()
+        assert response['status']=='degraded'
+        assert response['readiness']['voice_audio']['error_code']=='RuntimeError'
+        assert 'private model configuration' not in str(response)
+
+
+def test_repetitive_or_impossibly_fast_transcripts_are_not_sent_to_inference():
+    from relay.live_audio import reliable_transcript
+    assert reliable_transcript('What should I put in an emergency kit?',4)
+    assert reliable_transcript('Someone is not breathing',1)
+    assert reliable_transcript('Someone is not breathing. '*8,4)
+    assert reliable_transcript('Help me please. '*8,3)
+    assert not reliable_transcript("I don't think that's the case. "*12,10)
+    assert not reliable_transcript('Okay. '*30,3)
+    assert not reliable_transcript(' '.join('word'+str(i) for i in range(80)),2)

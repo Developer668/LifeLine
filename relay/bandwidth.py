@@ -98,6 +98,13 @@ class Conversation:
         self.audio_packets = 0
         self.clear_events = 0
         self.turns = 0
+        self.output_started = 0
+        self.output_failures = 0
+        self.synthesis_seconds = 0.0
+        self.partial_interrupted = False
+        self.vad_edges = 0
+        self.phase = 'idle'
+        self.speaking_since = None
 
     async def send(self, message):
         async with self.send_lock:
@@ -109,6 +116,8 @@ class Conversation:
 
     async def interrupt(self):
         self.generation += 1
+        self.phase = 'idle'
+        self.speaking_since = None
         if self.task:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
@@ -120,18 +129,34 @@ class Conversation:
         for sentence in re.findall(r'[^.!?]+[.!?]*', spoken(text)):
             if generation != self.generation:
                 return
-            audio = await asyncio.to_thread(live_audio.sentence_audio, sentence.strip())
+            started = time.monotonic()
+            self.phase = 'synthesizing'
+            try:
+                audio = await asyncio.to_thread(live_audio.sentence_audio, sentence.strip())
+            except Exception as error:
+                self.output_failures += 1
+                store.add_event(self.incident, 'voice_output_error', {'error_type': type(error).__name__})
+                raise
+            self.output_started += 1
+            self.synthesis_seconds += time.monotonic() - started
             for offset in range(0, len(audio), 160):
                 if generation != self.generation:
                     return
                 packet = audio[offset:offset + 160]
                 await self.send({'eventType': 'playAudio', 'media': {
                     'contentType': 'audio/pcmu', 'payload': base64.b64encode(packet).decode()}})
+                if self.phase != 'speaking':
+                    self.phase = 'speaking'
+                    self.speaking_since = time.monotonic()
                 # Don't fill the carrier buffer with an entire reply at once.
                 await asyncio.sleep(len(packet) / 8000)
+        if generation == self.generation:
+            self.phase = 'idle'
+            self.speaking_since = None
 
     async def answer(self, text, generation):
         try:
+            self.phase = 'thinking'
             from .app import emergency_response
             result = emergency_response(text)
             if not result:
@@ -168,9 +193,13 @@ class Conversation:
                         store.queue_outbox(self.incident, phone, last['result'], idempotency_key=last['id'] + '-voice-request')
                         result = 'I prepared that summary for text delivery. It may take a moment to arrive.'
             if not result:
+                from . import openai_fallback
+                from .api_worker import primary
+                cloud_enabled = openai_fallback.enabled()
+                cloud_primary = primary()
                 job_id = store.enqueue(self.incident, 'message', {'text': text, 'channel': 'voice',
-                    'sms_consent': sms_consent, 'provider': 'bandwidth'})
-                deadline = time.monotonic() + 35
+                    'sms_consent': sms_consent and not cloud_enabled, 'provider': 'bandwidth'})
+                deadline = time.monotonic() + (8 if cloud_enabled and not cloud_primary else 35)
                 while generation == self.generation and time.monotonic() < deadline:
                     job = store.job_for(self.incident, job_id)
                     if job['state'] == 'complete':
@@ -179,6 +208,20 @@ class Conversation:
                     if job['state'] == 'failed':
                         break
                     await asyncio.sleep(.2)
+                if not result and cloud_enabled and not cloud_primary and generation == self.generation:
+                    try:
+                        answer, reference, official = await asyncio.to_thread(openai_fallback.answer, text, self.incident)
+                        if store.record_fallback(job_id, answer, reference, official):
+                            result = answer
+                            store.add_event(self.incident, 'openai_fallback_used', {'kind': 'answer'})
+                        else:
+                            current = store.job_for(self.incident, job_id)
+                            result = current['result'] if current and current['state'] == 'complete' else None
+                    except openai_fallback.FallbackUnavailable:
+                        store.add_event(self.incident, 'openai_fallback_unavailable', {'kind': 'answer'})
+                if result and cloud_enabled and sms_consent and store.phone_for(self.incident):
+                    store.queue_outbox(self.incident, store.phone_for(self.incident), result,
+                                       idempotency_key=job_id + '-selected-answer')
                 if not result:
                     result = 'I could not verify a reply. Please try again. If there is immediate danger, call your local emergency number directly.'
             if generation == self.generation:
@@ -189,10 +232,38 @@ class Conversation:
             # Keep transcripts, credentials and model internals out of logs.
             store.add_event(self.incident, 'voice_processing_error', {'available': False})
 
+    async def greeting(self):
+        from .persona import VOICE_GREETING
+        try:
+            await self.speak(VOICE_GREETING, self.generation)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Observe greeting failures instead of leaving an unhandled task and
+            # a caller listening to silence with no diagnostic event.
+            await self.socket.close(code=1011)
+
     async def turn(self, text):
         self.turns += 1
         await self.interrupt()
         self.task = asyncio.create_task(self.answer(text, self.generation))
+
+    async def recognized(self, event):
+        if event.get('speech_start'):
+            self.vad_edges += 1
+        words = event['text'].lower().split()
+        confirmed = event.get('speech_confirmed', False) or len(words) >= 2 or (words and words[0] in ('stop', 'wait', 'help', 'hello', 'yes', 'no'))
+        audible = self.phase == 'speaking' and self.speaking_since is not None and time.monotonic() - self.speaking_since >= .25
+        if not event['final'] and confirmed and audible and not self.partial_interrupted:
+            await self.interrupt()
+            self.partial_interrupted = True
+        if event['final']:
+            self.partial_interrupted = False
+            if event['text']:
+                if event['text'].strip().lower() in ('stop', 'wait'):
+                    await self.interrupt()
+                else:
+                    await self.turn(event['text'])
 
     async def close(self):
         self.generation += 1
@@ -259,13 +330,32 @@ def install_bandwidth(app):
                         or str(metadata.get('accountId')) != os.getenv('BANDWIDTH_ACCOUNT_ID')):
                     await socket.close(code=1008)
                     return
+                formats = [{'track': t.get('name'), 'encoding': (t.get('mediaFormat') or {}).get('encoding'),
+                            'sample_rate': (t.get('mediaFormat') or {}).get('sampleRate')}
+                           for t in metadata.get('tracks', []) if isinstance(t, dict)]
+                store.add_event(session['incident'], 'voice_stream_format', {'tracks': formats})
                 recognizer = await asyncio.to_thread(live_audio.Recognizer)
-                from .persona import VOICE_GREETING
-                conversation.task = asyncio.create_task(conversation.speak(VOICE_GREETING, conversation.generation))
+                conversation.task = asyncio.create_task(conversation.greeting())
                 last_sequence = 0
                 total_bytes = 0
+                input_packets = 0
+                peak_input_rms = 0
+                input_rms_total = 0
+                input_started = time.monotonic()
+                last_report = input_started
+                last_audio_at = input_started
+                packet_seconds = .02
                 while True:
-                    raw = await socket.receive_text()
+                    try:
+                        raw = await asyncio.wait_for(socket.receive_text(), timeout=.2)
+                    except TimeoutError:
+                        # Some telephone paths suppress packets during silence.
+                        # Advance the local endpointer in wall time as well.
+                        if time.monotonic() - last_audio_at < max(.25, packet_seconds + .05):
+                            continue
+                        event = await asyncio.to_thread(recognizer.feed, b'\xff' * 1600)
+                        await conversation.recognized(event)
+                        continue
                     if len(raw) > 12000:
                         raise ValueError('Oversized media packet')
                     message = json.loads(raw)
@@ -281,13 +371,29 @@ def install_bandwidth(app):
                     if not 0 < len(audio) <= 8000:
                         raise ValueError('Invalid audio size')
                     total_bytes += len(audio)
+                    last_audio_at = time.monotonic()
+                    packet_seconds = len(audio) / 8000
+                    input_packets += 1
+                    import audioop
+                    level = audioop.rms(audioop.ulaw2lin(audio, 2), 2)
+                    peak_input_rms = max(peak_input_rms, level)
+                    input_rms_total += level
+                    if time.monotonic() - last_report > 5:
+                        store.add_event(session['incident'], 'voice_input_metrics', {
+                            'bytes': total_bytes, 'packets': input_packets,
+                            'seconds': round(time.monotonic()-input_started, 2),
+                            'peak_rms': peak_input_rms, 'mean_rms': round(input_rms_total/input_packets),
+                            'phase': conversation.phase})
+                        last_report = time.monotonic()
                     if total_bytes > (duration() + 2) * 8000:
                         raise ValueError('Audio duration exceeded')
                     event = await asyncio.to_thread(recognizer.feed, audio)
-                    if event['speech_start']:
-                        await conversation.interrupt()
-                    if event['final'] and event['text']:
-                        await conversation.turn(event['text'])
+                    if event['final'] and hasattr(recognizer, 'last_decode'):
+                        store.add_event(session['incident'], 'voice_recognition_quality', recognizer.last_decode)
+                    # Energy alone also means fans, traffic and microphone noise.
+                    # Interrupt only after recognizable speech, once per utterance.
+                    # Never cancel pending speech or inference on raw VAD edges.
+                    await conversation.recognized(event)
         except (WebSocketDisconnect, TimeoutError, ValueError):
             pass
         except Exception:
@@ -296,10 +402,12 @@ def install_bandwidth(app):
             await conversation.close()
             store.add_event(session['incident'], 'phone_stream_summary', {
                 'audio_packets': conversation.audio_packets, 'interruptions': conversation.clear_events,
-                'recognized_turns': conversation.turns})
+                'recognized_turns': conversation.turns, 'synthesized_sentences': conversation.output_started,
+                'output_failures': conversation.output_failures, 'vad_edges': conversation.vad_edges,
+                'synthesis_seconds': round(conversation.synthesis_seconds, 3)})
             with store.connect() as c:
                 c.execute('UPDATE bandwidth_sessions SET stopped=1 WHERE call_id=?', (call_id,))
             try:
                 await socket.close()
-            except RuntimeError:
+            except (RuntimeError, WebSocketDisconnect):
                 pass

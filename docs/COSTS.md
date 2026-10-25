@@ -7,7 +7,7 @@ Checked 2026-10-24 against the running implementation and official Bandwidth doc
 | Phone number and regular calls | Bandwidth number and Voice API | Carrier charges / trial credits |
 | Live call audio bridge | One bidirectional StartStream, inbound track only | Separate media-streaming usage |
 | Cellular texts | Bandwidth Build SMS | Carrier charges / trial credits per text |
-| Speech recognition and voice activity | Local Vosk | No external speech API meter |
+| Speech recognition and voice activity | Local Whisper + WebRTC voice activity (Vosk retained as an optional fallback) | No external speech API meter |
 | Spoken replies and interruption handling | Local Piper and gateway | No Bandwidth TTS meter |
 | Reasoning and vision | MiniCPM-o 4.5 on existing MoLab GPU | Uses existing compute allocation |
 | Queue, memory and contact workflows | FastAPI/SQLite on existing Mac | Existing machine resources |

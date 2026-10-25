@@ -19,9 +19,14 @@ speech = [
 voice = [
     "audioop-lts>=0.2.1 ; python_full_version >= '3.13'",
     "piper-tts==1.8.0",
+    "webrtcvad-wheels==2.0.14",
+    "websockets>=15",
+]
+
+local-voice = [
+    "faster-whisper==1.2.1",
     "vosk==0.3.42 ; sys_platform == 'darwin'",
     "vosk==0.3.45 ; sys_platform != 'darwin'",
-    "websockets>=15",
 ]
 
 [dependency-groups]

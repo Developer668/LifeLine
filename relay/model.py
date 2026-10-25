@@ -21,6 +21,17 @@ POLICY = (
 ) + ' ' + STYLE
 
 
+def validate_proposal(proposal):
+    if proposal.next_action in ('request_camera', 'contact_trusted') and not proposal.requires_user_confirmation:
+        raise ValueError('Sensitive action requires confirmation')
+    if proposal.reference_message.required and not proposal.reference_message.requires_consent:
+        raise ValueError('Reference messages require consent')
+    import re
+    if re.search(r"\b(?:I(?:'ve| have)? (?:sent|texted|called|dispatched)|help is on (?:its|the) way|rescue is coming|you are safe)\b", proposal.spoken_response, re.I):
+        raise ValueError('Unverified delivery or safety claim')
+    return proposal
+
+
 @dataclass(frozen=True)
 class ModelResult:
     text: str
@@ -164,12 +175,4 @@ class ModelAdapter:
         if result.simulated:
             return ActionPlan(spoken_response=result.text)
         proposal = ActionPlan.model_validate_json(result.text)
-        # Proposed sensitive actions can only request confirmation. They never send.
-        if proposal.next_action in ('request_camera', 'contact_trusted') and not proposal.requires_user_confirmation:
-            raise ValueError('Sensitive action requires confirmation')
-        if proposal.reference_message.required and not proposal.reference_message.requires_consent:
-            raise ValueError('Reference messages require consent')
-        import re
-        if re.search(r"\b(?:I(?:'ve| have)? (?:sent|texted|called|dispatched)|help is on (?:its|the) way|rescue is coming|you are safe)\b", proposal.spoken_response, re.I):
-            raise ValueError('Unverified delivery or safety claim')
-        return proposal
+        return validate_proposal(proposal)

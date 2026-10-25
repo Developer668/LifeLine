@@ -1,5 +1,11 @@
 .venv/
 .env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+.wrangler/
+node_modules/
 *.db
 *.db-*
 __pycache__/

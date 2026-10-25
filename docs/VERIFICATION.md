@@ -4,7 +4,7 @@ LifeLine was bootstrapped from the existing sibling RELAY starter. Its nine base
 
 ## Confirmed
 
-- `uv run pytest -q`: **121 passed**, zero failures; one upstream FastAPI/Starlette TestClient deprecation warning.
+- `uv run pytest -q`: **124 passed**, zero failures; one upstream FastAPI/Starlette TestClient deprecation warning.
 - `uv run python -m compileall -q relay scripts` and `git diff --check`: passed.
 - Real MoLab hardware: NVIDIA RTX PRO6000 Blackwell Server Edition,97887MiB, driver595.71.05. No Mac GPU inference was used.
 - Real MiniCPM-o4.5 health, model listing, text completion, validated structured proposals, and image completion passed. Simulation disabled.
@@ -86,3 +86,15 @@ A later outage was traced to Bandwidth OAuth HTTP 401 `invalid_client` with the 
 After restarting the gateway with the replacement configuration, public health reported healthy Bandwidth authentication, an authenticated empty SMS callback returned 204, and a new actual GPU job completed. No real call or SMS was sent by those recovery checks, and old failed/uncertain messages were not automatically replayed.
 
 Readiness now records safe provider-authentication status (without credentials), reports degraded service on a detected authentication failure, and clears it after a successful probe. SMS authentication happens before multipart work and local budget reservation, so invalid credentials do not consume that allowance. The regression suite now passes 121 tests.
+
+## Silent voice-call regression and correction
+
+Two real user calls connected but produced zero outbound audio packets. One had 17 playback clears and four recognized turns; inference completed for some turns while every spoken response was cancelled. The gateway was incorrectly treating raw audio-energy edges (including background noise) as confirmed interruptions. A no-input WebSocket check independently demonstrated that local speech generation and outbound packet creation worked, isolating the cancellation path.
+
+Barge-in now requires recognizable partial speech (or a clear short control word), once per utterance. Raw noise and low-information single-word partials no longer cancel pending synthesis or inference. Final recognized utterances continue through the queue and actual GPU worker. A bare stop/wait cancels speech without launching another inference request. Greeting synthesis failures are now observed and recorded, and a closed WebSocket no longer causes a secondary cleanup traceback. Telemetry records synthesized sentences, output failures, audio packets, VAD edges and synthesis time without recording caller audio.
+
+122 tests pass, including a regression where repeated noise edges arrive during cold synthesis. A fresh public WebSocket drill with generated non-speech noise, real local ASR/TTS and the real GPU worker produced first audio in 1.04 seconds, 114 speech packets with zero clears during the noise phase, a completed inference job and 86 reply packets in the final two-second window. Peak decoded packet RMS was 11945; total output 38400 PCMU bytes. No carrier call, SMS or audio file was created. Local evidence: reports/noisy-voice.json. Reproduce with scripts/check_voice_audio.py. A new physical handset playback check was requested; synthetic packets alone do not confirm that audio was heard on the phone.
+
+A physical retry after the first cancellation fix made the greeting audible but still did not yield replies. Its records showed 72 output packets, four completed/attempted recognition turns and eight clears; partial transcripts were garbled and inference was cancelled before playback. The second correction separates playback state from pending inference: partial recognition cannot cancel a model job, and interruption is applied only to active audible playback. Local Whisper base.en with WebRTC voice activity replaces Vosk as the default phone recognizer. Utterances remain in memory, are bounded to ten seconds, and use no provider transcription. Models warm before startup completes, with readiness exposing a startup failure safely.
+
+The revised public audio test passed in 10.30 seconds: first audio 0.368 seconds, 145 packets/no clears during generated noise, a completed inference job and 92 answer packets in the final two-second window. Output was 63869 PCMU bytes, peak decoded packet RMS 11318. No carrier call or recording was created by this check. A second physical handset check was requested after these changes. Reproduce local model setup with scripts/setup_voice.py. The suite now passes 124 tests, including pending-inference protection and private-error-safe warmup failure readiness.

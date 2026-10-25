@@ -192,6 +192,28 @@ def latest(incident):
         return dict(row) if row else None
 
 
+def record_fallback(job_id, result, reference_text=None, official_context=None):
+    """Keep one selected answer and its origin in the authorized conversation.
+
+    A valid late primary result wins. Otherwise the fallback invalidates its old
+    lease, so late primary completion cannot overwrite the answer already spoken.
+    """
+    with connect() as c:
+        c.execute('BEGIN IMMEDIATE')
+        row = c.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+        if not row or row['state'] == 'complete':
+            c.execute('ROLLBACK')
+            return False
+        payload = json.loads(row['payload'])
+        payload.update(inference_provider='openai_fallback', primary_state=row['state'])
+        if reference_text: payload['reference_text'] = reference_text[:1000]
+        if official_context: payload['official_context'] = official_context
+        c.execute("UPDATE jobs SET state='complete',result=?,payload=?,lease=NULL,leased_until=NULL,updated=? WHERE id=?",
+                  (result[:1800], json.dumps(payload, sort_keys=True), time.time(), job_id))
+        c.execute('COMMIT')
+    return True
+
+
 def incident_info(incident):
     with connect() as c:
         i = c.execute("SELECT id,channel,created,updated FROM incidents WHERE id=?", (incident,)).fetchone()

@@ -18,13 +18,25 @@ import asyncio
 @asynccontextmanager
 async def lifespan(app):
     from .outbox import background_drain
+    from . import live_audio
+    if live_audio.ready():
+        store.set_service_health('voice_audio', 'warming')
+        try:
+            await asyncio.to_thread(live_audio.warmup)
+            store.set_service_health('voice_audio', 'healthy')
+        except Exception as error:
+            store.set_service_health('voice_audio', 'failed', error_code=type(error).__name__)
     stop = asyncio.Event()
     task = asyncio.create_task(background_drain(stop))
+    from . import api_worker
+    inference = asyncio.create_task(api_worker.run(stop)) if api_worker.primary() else None
     try:
         yield
     finally:
         stop.set()
         await task
+        if inference:
+            await inference
 
 app = FastAPI(title="RELAY phone-first demo", version="0.2.0", lifespan=lifespan)
 store.initialize()
@@ -89,12 +101,21 @@ def next_prompt(reply, turn=None):
 @app.get("/health")
 def health():
     carrier_auth = store.service_health('bandwidth_auth')
-    return {"status": "degraded" if carrier_auth['state'] in ('failed', 'unavailable') else "ok", "mode": os.getenv("RELAY_MODE", "demo"),
+    voice_audio = store.service_health('voice_audio')
+    api_inference = store.service_health('openai_inference')
+    api_transcription = store.service_health('openai_transcription')
+    api_failed = os.getenv('RELAY_INFERENCE_PROVIDER') == 'openai' and any(s['state'] in ('failed', 'unavailable') for s in (api_inference,api_transcription))
+    return {"status": "degraded" if carrier_auth['state'] in ('failed', 'unavailable') or voice_audio['state'] == 'failed' or api_failed else "ok", "mode": os.getenv("RELAY_MODE", "demo"),
             "readiness": {"twilio_configured": all(os.getenv(k) for k in ('TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_NUMBER')),
                           "live_send_enabled": os.getenv('TWILIO_LIVE_SEND','false').lower()=='true',
                           "bandwidth_configured": all(os.getenv(k) for k in ('BANDWIDTH_CLIENT_ID', 'BANDWIDTH_CLIENT_SECRET', 'BANDWIDTH_ACCOUNT_ID', 'BANDWIDTH_VOICE_APPLICATION_ID', 'BANDWIDTH_CALLBACK_SECRET')),
                           "bandwidth_sms_enabled": os.getenv('BANDWIDTH_LIVE_SEND','false').lower()=='true',
                           "bandwidth_auth": carrier_auth,
+                          "voice_audio": voice_audio,
+                          "inference_provider": os.getenv('RELAY_INFERENCE_PROVIDER', 'minicpm'),
+                          "speech_recognition": os.getenv('RELAY_ASR_ENGINE', 'vosk'),
+                          "openai_inference": api_inference,
+                          "openai_transcription": api_transcription,
                           "gpu_verified": False, "carrier_verified": False},
             "notice": "Gateway health does not establish GPU readiness."}
 
@@ -125,9 +146,24 @@ def demo_status(request: Request, incident: str):
     return info
 
 
+@app.get('/demo/openai-budget')
+def openai_budget(request: Request):
+    require_token(request, 'DEMO_TOKEN')
+    from . import openai_fallback
+    values = openai_fallback.budget()
+    return {'enabled': bool(openai_fallback.enabled()), 'scope': 'RELAY lifetime OpenAI usage only',
+            'cap_usd': values['cap_micro']/1_000_000,
+            'accounted_usd': values['accounted_micro']/1_000_000,
+            'remaining_usd': values['remaining_micro']/1_000_000,
+            'transcription_model': openai_fallback.ASR_MODEL, 'answer_model': openai_fallback.TEXT_MODEL}
+
+
 @app.post("/worker/claim")
 def worker_claim(request: Request):
     require_token(request, "RELAY_WORKER_TOKEN")
+    from .api_worker import primary
+    if primary():
+        return {'job': None}
     return {"job": store.claim()}
 
 

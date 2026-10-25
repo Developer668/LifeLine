@@ -1,4 +1,8 @@
-# RELAY
+# LifeLine
+
+LifeLine is a phone-based AI assistant for official weather and earthquake information and requests to consenting trusted contacts. The main application lives in `relay/`; the static landing page lives in `website/public/`.
+
+**[Live website](https://lifeline-relay.pages.dev/)** · [Website setup and deployment](website/README.md)
 
 Phone-first emergency information and consenting trusted-contact coordination. FastAPI + durable SQLite gateway, Bandwidth live voice/SMS (legacy Twilio adapter retained), outbound MoLab worker, MiniCPM-o 4.5, NWS and USGS context, optional browser camera frames.
 
@@ -25,9 +29,9 @@ The default worker **refuses** to substitute simulated inference when a model is
 
 ## Bandwidth phone setup
 
-Install local streaming speech dependencies with `uv sync --extra voice --group dev`. Set the Bandwidth credentials, account ID, assigned number, public HTTPS callback address, and local Vosk/Piper model paths in `.env`. Run `uv run --extra voice python scripts/configure_bandwidth.py --apply` to configure the existing trial voice and messaging applications. It does not buy a number, call anyone, or send a text. Original callback snapshots are saved privately under `.runtime/`.
+Install local streaming speech dependencies with `uv sync --extra voice --group dev`. Run `uv run --extra voice python scripts/setup_voice.py` to download and configure local Whisper/Piper models. Set the Bandwidth credentials, account ID, assigned number and public HTTPS callback address in `.env`. Run `uv run --extra voice python scripts/configure_bandwidth.py --apply` to configure the existing trial voice and messaging applications. It does not buy a number, call anyone, or send a text. Original callback snapshots are saved privately under `.runtime/`.
 
-Incoming calls use a two-way Bandwidth WebSocket: Vosk transcribes inbound audio locally; the real MoLab worker answers; Piper sends raw telephone audio packets directly into the call. Speech detection cancels reply playback and clears the carrier buffer when the caller interrupts. No WAV file is created or downloaded. No Bandwidth TTS or transcription is used, including on failure. The bidirectional audio bridge is a separately metered carrier feature; see [service and cost breakdown](docs/COSTS.md). The model still reasons on completed utterances; this is an interruptible phone pipeline rather than native MiniCPM duplex audio.
+Incoming calls use a two-way Bandwidth WebSocket: Whisper transcribes bounded utterances locally, with WebRTC voice activity for turn endings; the real MoLab worker answers; Piper sends raw telephone audio packets directly into the call. Confirmed speech can interrupt active playback and clear the carrier buffer. Background noise and partial recognition do not cancel pending inference. Audio models warm before the gateway reports ready. No WAV file is created or downloaded. No Bandwidth TTS or transcription is used, including on failure. The bidirectional audio bridge is a separately metered carrier feature; see [service and cost breakdown](docs/COSTS.md). The model still reasons on completed utterances; this is an interruptible phone pipeline rather than native MiniCPM duplex audio.
 
 To share a call with SMS, say **link my texts** and send `LINK CODE` from the calling phone. The code expires after five minutes and is single-use; the authorized association lasts one hour. `UNLINK` separates the channels. Caller ID alone never joins histories.
 
