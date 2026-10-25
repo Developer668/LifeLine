@@ -51,6 +51,9 @@ def initialize():
             id TEXT PRIMARY KEY, incident TEXT NOT NULL, kind TEXT NOT NULL,
             body TEXT NOT NULL, created REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS outbox_submissions(id TEXT PRIMARY KEY, started REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS service_health (
+            name TEXT PRIMARY KEY, state TEXT NOT NULL, checked REAL NOT NULL,
+            http_status INTEGER, error_code TEXT);
         CREATE TABLE IF NOT EXISTS outbox(
             id TEXT PRIMARY KEY, incident TEXT NOT NULL, recipient TEXT,
             content TEXT NOT NULL, state TEXT NOT NULL,
@@ -58,6 +61,18 @@ def initialize():
         CREATE UNIQUE INDEX IF NOT EXISTS jobs_dedup_idx ON jobs(incident, kind, payload, state)
         WHERE state IN ('queued','leased');
         """)
+
+
+def set_service_health(name, state, http_status=None, error_code=None):
+    with connect() as c:
+        c.execute('INSERT OR REPLACE INTO service_health VALUES(?,?,?,?,?)',
+                  (name, state, time.time(), http_status, error_code))
+
+
+def service_health(name):
+    with connect() as c:
+        row = c.execute('SELECT state,checked,http_status,error_code FROM service_health WHERE name=?', (name,)).fetchone()
+    return dict(row) if row else {'state': 'unknown', 'checked': None, 'http_status': None, 'error_code': None}
 
 
 def upsert_incident(incident, phone=None, channel="sms"):

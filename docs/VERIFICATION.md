@@ -4,7 +4,7 @@ LifeLine was bootstrapped from the existing sibling RELAY starter. Its nine base
 
 ## Confirmed
 
-- `uv run pytest -q`: **120 passed**, zero failures; one upstream FastAPI/Starlette TestClient deprecation warning.
+- `uv run pytest -q`: **121 passed**, zero failures; one upstream FastAPI/Starlette TestClient deprecation warning.
 - `uv run python -m compileall -q relay scripts` and `git diff --check`: passed.
 - Real MoLab hardware: NVIDIA RTX PRO6000 Blackwell Server Edition,97887MiB, driver595.71.05. No Mac GPU inference was used.
 - Real MiniCPM-o4.5 health, model listing, text completion, validated structured proposals, and image completion passed. Simulation disabled.
@@ -78,3 +78,11 @@ Relay now has one explicitly AI identity across calls and SMS. The 48-word call 
 ## Carrier-cost pass
 
 Removed the remaining Bandwidth SpeakSentence fallback. The working phone path invokes only call control, one bidirectional audio stream and cellular SMS; speech recognition, synthesis and reasoning run on our existing machines. The trial prefix is provider-added and mandatory. Single-message onboarding now fits one 129-character trial text, with HELP in two. 120 tests pass, including a paid-feature BXML allowlist and unavailable-model Hangup path. No call, text, billing upgrade or credit purchase was made during this pass. See COSTS.md for limits and published media-stream pricing, which is separate from basic calling.
+
+## Bandwidth credential outage and recovery
+
+A later outage was traced to Bandwidth OAuth HTTP 401 `invalid_client` with the previous credentials. The public gateway and real GPU worker remained healthy; a fresh model request completed while carrier authentication was failing. The user supplied a replacement secret for the same client. Authentication then succeeded, both voice/messaging callback configurations were reapplied and read back, and the assigned number's inbound routing remained enabled and bound to the expected application.
+
+After restarting the gateway with the replacement configuration, public health reported healthy Bandwidth authentication, an authenticated empty SMS callback returned 204, and a new actual GPU job completed. No real call or SMS was sent by those recovery checks, and old failed/uncertain messages were not automatically replayed.
+
+Readiness now records safe provider-authentication status (without credentials), reports degraded service on a detected authentication failure, and clears it after a successful probe. SMS authentication happens before multipart work and local budget reservation, so invalid credentials do not consume that allowance. The regression suite now passes 121 tests.

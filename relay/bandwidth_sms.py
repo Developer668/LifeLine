@@ -47,11 +47,20 @@ def sms_parts(text):
 
 
 def access_token(client):
-    response = client.post('https://api.bandwidth.com/api/v1/oauth2/token',
-        auth=(os.environ['BANDWIDTH_CLIENT_ID'], os.environ['BANDWIDTH_CLIENT_SECRET']),
-        data={'grant_type': 'client_credentials'})
+    try:
+        response = client.post('https://api.bandwidth.com/api/v1/oauth2/token',
+            auth=(os.environ['BANDWIDTH_CLIENT_ID'], os.environ['BANDWIDTH_CLIENT_SECRET']),
+            data={'grant_type': 'client_credentials'})
+    except httpx.HTTPError:
+        store.set_service_health('bandwidth_auth', 'unavailable', error_code='connection_failed')
+        raise
+    if not response.is_success:
+        store.set_service_health('bandwidth_auth', 'failed', response.status_code,
+            'invalid_client' if response.status_code == 401 else 'authentication_rejected')
     response.raise_for_status()
-    return response.json()['access_token']
+    token = response.json()['access_token']
+    store.set_service_health('bandwidth_auth', 'healthy', response.status_code)
+    return token
 
 
 def reserve(ident):
@@ -80,6 +89,15 @@ def dispatch(row):
     if not all(os.getenv(k) for k in required):
         store.update_outbox(ident, 'failed')
         return {'state': 'failed', 'id': ident, 'reason': 'configuration_missing'}
+    # Validate account access before creating multipart work or reserving budget.
+    # A revoked credential must not consume our SMS-attempt allowance.
+    try:
+        with httpx.Client(timeout=8) as client:
+            token = access_token(client)
+    except Exception:
+        store.update_outbox(ident, 'failed')
+        store.add_event(row['incident'], 'carrier_auth_unavailable', {'provider': 'bandwidth'})
+        return {'state': 'failed', 'id': ident, 'reason': 'authentication_unavailable'}
     parts = sms_parts(row['content'])
     # Every part gets its own durable claim and receipt. Never retry an uncertain send.
     with store.connect() as c:
@@ -103,7 +121,6 @@ def dispatch(row):
     submitted = False
     try:
         with httpx.Client(timeout=8) as client:
-            token = access_token(client)
             submitted = True
             response = client.post('https://api.bandwidth.com/v1/build/accounts/' + os.environ['BANDWIDTH_ACCOUNT_ID'] + '/messages',
                 headers={'Authorization': 'Bearer ' + token}, json={

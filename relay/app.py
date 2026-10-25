@@ -88,11 +88,13 @@ def next_prompt(reply, turn=None):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "mode": os.getenv("RELAY_MODE", "demo"),
+    carrier_auth = store.service_health('bandwidth_auth')
+    return {"status": "degraded" if carrier_auth['state'] in ('failed', 'unavailable') else "ok", "mode": os.getenv("RELAY_MODE", "demo"),
             "readiness": {"twilio_configured": all(os.getenv(k) for k in ('TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_NUMBER')),
                           "live_send_enabled": os.getenv('TWILIO_LIVE_SEND','false').lower()=='true',
                           "bandwidth_configured": all(os.getenv(k) for k in ('BANDWIDTH_CLIENT_ID', 'BANDWIDTH_CLIENT_SECRET', 'BANDWIDTH_ACCOUNT_ID', 'BANDWIDTH_VOICE_APPLICATION_ID', 'BANDWIDTH_CALLBACK_SECRET')),
                           "bandwidth_sms_enabled": os.getenv('BANDWIDTH_LIVE_SEND','false').lower()=='true',
+                          "bandwidth_auth": carrier_auth,
                           "gpu_verified": False, "carrier_verified": False},
             "notice": "Gateway health does not establish GPU readiness."}
 

@@ -74,3 +74,30 @@ def test_delivery_receipts_are_bound_to_bandwidth_intents(monkeypatch):
     body[0]['type']='message-sent'
     client.post('/bandwidth/sms',json=body,headers=headers)
     assert store.outbox_for(ident)['state']=='delivered'
+
+
+def test_invalid_credentials_mark_readiness_degraded_without_spending_sms_budget(monkeypatch):
+    import httpx
+    settings(monkeypatch);monkeypatch.setenv('BANDWIDTH_LIVE_SEND','true')
+    store.upsert_incident('auth-drill','+15550000442','sms');bandwidth_sms.register('auth-drill')
+    ident=store.queue_outbox('auth-drill','+15550000442','A detailed fictional drill response. '*8)
+    original_client=httpx.Client
+    urls=[]
+    def reject(request):
+        urls.append(str(request.url))
+        return httpx.Response(401,json={'error':'invalid_client','error_description':'Provided client credentials are invalid'})
+    monkeypatch.setattr(bandwidth_sms.httpx,'Client',lambda **kwargs:original_client(transport=httpx.MockTransport(reject),**kwargs))
+    result=providers.dispatch_outbox(ident)
+    assert result['reason']=='authentication_unavailable'
+    assert len(urls)==1 and urls[0].endswith('/oauth2/token')
+    with store.connect() as c:
+        assert c.execute('SELECT COUNT(*) FROM bandwidth_sms_budget').fetchone()[0]==0
+        assert c.execute('SELECT COUNT(*) FROM outbox').fetchone()[0]==1
+    readiness=TestClient(app).get('/health').json()
+    assert readiness['status']=='degraded'
+    assert readiness['readiness']['bandwidth_auth']['error_code']=='invalid_client'
+    assert 'test-secret' not in str(readiness)
+    # A later successful probe clears the stale failure without sending an SMS.
+    with original_client(transport=httpx.MockTransport(lambda req:httpx.Response(200,json={'access_token':'ephemeral-test-token'}))) as client:
+        assert bandwidth_sms.access_token(client)=='ephemeral-test-token'
+    assert TestClient(app).get('/health').json()['status']=='ok'
