@@ -37,7 +37,8 @@ def bxml(call_id, phone=None):
     initialize()
     root = ET.Element('Response')
     if not live_audio.ready():
-        ET.SubElement(root, 'SpeakSentence').text = 'RELAY voice is temporarily unavailable. This prototype cannot dispatch emergency help.'
+        # Never incur provider TTS charges as a fallback. Without the local
+        # pipeline, end promptly rather than silently billing a connected call.
         ET.SubElement(root, 'Hangup')
         return ET.tostring(root, encoding='unicode')
     # Deterministic per-call capability lets callback retries replay identical BXML

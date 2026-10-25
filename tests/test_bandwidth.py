@@ -47,6 +47,16 @@ def test_outbound_answer_binds_callee_even_without_direction_field(monkeypatch):
     assert store.phone_for(incident) == '+15550000442'
 
 
+def test_phone_path_never_requests_paid_speech_features(monkeypatch):
+    client, auth, event = setup(monkeypatch)
+    root = ET.fromstring(client.post('/bandwidth/voice', json=event, headers=auth).text)
+    assert {child.tag for child in root} == {'StartStream', 'Pause', 'Hangup'}
+    monkeypatch.setattr(live_audio, 'ready', lambda: False)
+    event['callId'] = 'c-local-unavailable-123'
+    root = ET.fromstring(client.post('/bandwidth/voice', json=event, headers=auth).text)
+    assert [child.tag for child in root] == ['Hangup']
+
+
 def test_websocket_auth_metadata_and_single_use(monkeypatch):
     client, auth, event = setup(monkeypatch)
     reply = ET.fromstring(client.post('/bandwidth/voice', json=event, headers=auth).text)

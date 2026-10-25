@@ -4,7 +4,7 @@ LifeLine was bootstrapped from the existing sibling RELAY starter. Its nine base
 
 ## Confirmed
 
-- `uv run pytest -q`: **118 passed**, zero failures; one upstream FastAPI/Starlette TestClient deprecation warning.
+- `uv run pytest -q`: **120 passed**, zero failures; one upstream FastAPI/Starlette TestClient deprecation warning.
 - `uv run python -m compileall -q relay scripts` and `git diff --check`: passed.
 - Real MoLab hardware: NVIDIA RTX PRO6000 Blackwell Server Edition,97887MiB, driver595.71.05. No Mac GPU inference was used.
 - Real MiniCPM-o4.5 health, model listing, text completion, validated structured proposals, and image completion passed. Simulation disabled.
@@ -74,3 +74,7 @@ The user reports successful calling and texting from their handset. Gateway reco
 Relay now has one explicitly AI identity across calls and SMS. The 48-word call greeting explains official alerts, approved-contact requests, why fast clear information matters, and the inability to dispatch emergency help. Short SMS greetings use two trial-size messages. HELP and explicit purpose questions explain the same role. Critical-risk messages bypass onboarding. Ordinary questions keep a direct conversational answer without repeated introductions.
 
 118 tests pass. Public worker checks returned the purpose response in 1.24 seconds and a validated real GPU answer in 2.31 seconds. No carrier call or SMS was initiated by those checks. Local evidence: reports/persona.json.
+
+## Carrier-cost pass
+
+Removed the remaining Bandwidth SpeakSentence fallback. The working phone path invokes only call control, one bidirectional audio stream and cellular SMS; speech recognition, synthesis and reasoning run on our existing machines. The trial prefix is provider-added and mandatory. Single-message onboarding now fits one 129-character trial text, with HELP in two. 120 tests pass, including a paid-feature BXML allowlist and unavailable-model Hangup path. No call, text, billing upgrade or credit purchase was made during this pass. See COSTS.md for limits and published media-stream pricing, which is separate from basic calling.

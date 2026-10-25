@@ -39,7 +39,11 @@ def test_real_questions_and_critical_risk_do_not_get_an_introduction(monkeypatch
 def test_help_explains_purpose_without_a_website():
     from relay.phone_commands import handle
     text=handle('test-owner','+15550001111','HELP')
-    assert 'AI emergency information' in text
+    assert 'AI for official alerts' in text
     assert 'reliable information quickly' in text
     assert 'STOP' in text and 'http' not in text
     assert len(sms_parts(text)) <= 4
+
+
+def test_sms_greeting_uses_one_trial_message():
+    assert sms_parts(SMS_INTRO) == [SMS_INTRO]

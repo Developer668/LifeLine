@@ -12,10 +12,8 @@ VOICE_GREETING = (
 )
 
 SMS_INTRO = (
-    "Hi, I'm Relay, an AI emergency information assistant. "
-    "I help you find reliable information quickly: official alerts and trusted-contact options. "
-    "I can't dispatch help. For immediate danger, call your local emergency number. "
-    "What do you need?"
+    "Hi, I'm Relay, an AI for official alerts and trusted contacts. "
+    "Find reliable information quickly. I can't dispatch help."
 )
 
 PURPOSE = (
